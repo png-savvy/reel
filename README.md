@@ -20,7 +20,7 @@ Reel runs on your own computer. Your ratings never leave it.
 - [First steps in the app](#first-steps-in-the-app)
 - [Where the data comes from](#where-the-data-comes-from)
 - [How scoring works](#how-scoring-works)
-- [For developers](#for-developers)
+- [Install for developers](#install-for-developers)
 - [Data and licensing notes](#data-and-licensing-notes)
 - [Licence](#licence)
 
