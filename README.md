@@ -125,7 +125,7 @@ Hover the small **i** next to any filter for an explanation, or click **How scor
 
 ---
 
-## For developers
+## Install for developers
 
 ```bash
 npm install
