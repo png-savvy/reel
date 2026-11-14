@@ -2,6 +2,7 @@
 // Usage: npm run catalog [-- --refresh]   (--refresh re-downloads the raw files)
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import readline from 'node:readline';
 import { pipeline } from 'node:stream/promises';
@@ -9,13 +10,14 @@ import { Readable } from 'node:stream';
 import Database from 'better-sqlite3';
 import { computeTvStats, bayes } from './tvstats.mjs';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RAW = path.join(ROOT, 'data', 'raw');
 const OUT = path.join(ROOT, 'data', 'catalog.db');
 const TMP = OUT + '.building';
 const FILES = ['title.ratings', 'title.basics', 'title.episode', 'title.crew', 'name.basics'];
 const MIN_VOTES = { movie: 400, tv: 300 };
 const refresh = process.argv.includes('--refresh');
+const clean = process.argv.includes('--clean'); // delete the raw downloads afterwards to save ~700 MB
 
 const log = (...a) => console.log(`[catalog ${new Date().toTimeString().slice(0, 8)}]`, ...a);
 
@@ -24,7 +26,7 @@ async function download() {
   for (const f of FILES) {
     const dest = path.join(RAW, `${f}.tsv.gz`);
     if (fs.existsSync(dest) && !refresh) continue;
-    log('downloading', f);
+    log(`downloading ${f} (${FILES.indexOf(f) + 1} of ${FILES.length})`);
     const res = await fetch(`https://datasets.imdbws.com/${f}.tsv.gz`);
     if (!res.ok) throw new Error(`download failed for ${f}: ${res.status}`);
     await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(dest + '.part'));
@@ -175,6 +177,7 @@ async function main() {
   db.exec('VACUUM');
   db.close();
   fs.renameSync(TMP, OUT);
+  if (clean) for (const f of FILES) fs.rmSync(path.join(RAW, `${f}.tsv.gz`), { force: true });
   log('done →', OUT, `${(fs.statSync(OUT).size / 1e6).toFixed(0)} MB`);
 }
 

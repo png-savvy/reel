@@ -374,4 +374,11 @@ if (fs.existsSync(dist)) {
 }
 
 const PORT = process.env.PORT || 4317;
-app.listen(PORT, () => console.log(`Reel API on http://localhost:${PORT}${hasCatalog() ? '' : '  (no catalog yet — run: npm run catalog)'}`));
+// Local-only by default: there is no login, so don't expose ratings and API keys to the whole network.
+// Set HOST=0.0.0.0 to reach it from other devices on a network you trust.
+const HOST = process.env.HOST || '127.0.0.1';
+const server = app.listen(PORT, HOST, () => console.log(`Reel is running at http://localhost:${PORT}${hasCatalog() ? '' : '  (no catalog yet — run: npm run catalog)'}`));
+server.on('error', (e) => {
+  console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} is already in use — Reel may already be running. Open http://localhost:${PORT}` : e.message);
+  process.exit(1);
+});
