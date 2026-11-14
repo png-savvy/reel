@@ -8,6 +8,22 @@ Reel runs on your own computer. Your ratings never leave it.
 
 ![Discover](docs/discover.png)
 
+## Contents
+
+- [Install](#install-no-technical-knowledge-needed)
+  - [Step 1 — Install Node.js](#step-1--install-nodejs-one-time)
+  - [Step 2 — Download Reel](#step-2--download-reel)
+  - [Step 3 — Start Reel](#step-3--start-reel)
+  - [Every time after that](#every-time-after-that)
+  - [If something goes wrong](#if-something-goes-wrong)
+  - [Updating, moving and removing](#updating-moving-and-removing)
+- [First steps in the app](#first-steps-in-the-app)
+- [Where the data comes from](#where-the-data-comes-from)
+- [How scoring works](#how-scoring-works)
+- [For developers](#for-developers)
+- [Data and licensing notes](#data-and-licensing-notes)
+- [Licence](#licence)
+
 ---
 
 ## Install (no technical knowledge needed)
