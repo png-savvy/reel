@@ -17,7 +17,7 @@ if (major < 20) fail(`Reel needs Node.js 20 or newer (you have ${process.version
 
 function run(cmd, args, what) {
   const r = spawnSync(cmd, args, { stdio: 'inherit', shell: process.platform === 'win32' });
-  if (r.status !== 0) fail(`${what} failed. Scroll up for the error. Running "npm run reel" again is safe and resumes where it stopped.`);
+  if (r.status !== 0) fail(`${what} failed. Scroll up for the error; running the starter again is safe and resumes where it stopped.`);
 }
 function openBrowser() {
   if (process.env.REEL_NO_OPEN) return;
@@ -49,6 +49,6 @@ if (!fs.existsSync(built) || fs.statSync(built).mtimeMs < newest(path.join(ROOT,
   run('npx', ['vite', 'build', '--logLevel', 'warn'], 'Preparing the app');
 }
 
-say(`Starting Reel at ${URL_}  —  leave this terminal open while you use it; press Ctrl+C to stop.`);
+say(`Starting Reel at ${URL_}  —  keep this window open while you use it; close it to stop.`);
 await import('../server/index.mjs');
 setTimeout(openBrowser, 600);

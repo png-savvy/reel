@@ -8,79 +8,85 @@ Reel runs on your own computer. Your ratings never leave it.
 
 ![Discover](docs/discover.png)
 
+## Contents
+
+- [Install](#install-no-technical-knowledge-needed)
+  - [Step 1 — Install Node.js](#step-1--install-nodejs-one-time)
+  - [Step 2 — Download Reel](#step-2--download-reel)
+  - [Step 3 — Start Reel](#step-3--start-reel)
+  - [Every time after that](#every-time-after-that)
+  - [If something goes wrong](#if-something-goes-wrong)
+  - [Updating, moving and removing](#updating-moving-and-removing)
+- [First steps in the app](#first-steps-in-the-app)
+- [Where the data comes from](#where-the-data-comes-from)
+- [How scoring works](#how-scoring-works)
+- [For developers](#for-developers)
+- [Data and licensing notes](#data-and-licensing-notes)
+- [Licence](#licence)
+
 ---
 
-## Install
+## Install (no technical knowledge needed)
 
-You need **Node.js 20 or newer** ([download the LTS version](https://nodejs.org/en/download)), about
-**1 GB of free disk space**, and an internet connection. Works on Windows, macOS and Linux.
+You need a computer running Windows, macOS or Linux, about **1 GB of free disk space**, and an internet
+connection. Setup takes around 10 minutes, most of it waiting.
 
-Not sure if you have Node.js? Open a terminal and run `node --version`. If it prints `v20` or higher, you're
-set.
+### Step 1 — Install Node.js (one time)
 
-> **Opening a terminal** — Windows: press Start, type `PowerShell`, press Enter. Mac: press Cmd+Space, type
-> `Terminal`, press Enter. Then paste each command below and press Enter.
+Reel is built on a free tool called Node.js.
 
-### 1. Get the code
+1. Go to **https://nodejs.org/en/download**
+2. Download the **LTS** installer for your computer.
+3. Open it and click through with the default options.
 
-With git:
+### Step 2 — Download Reel
 
-```bash
-git clone https://github.com/png-savvy/reel.git
-```
+1. On this page, click the green **Code** button, then **Download ZIP**.
+2. Open your Downloads folder and unzip it:
+   - **Windows:** right-click the ZIP → **Extract All…** → **Extract**. (Don't just double-click into it —
+     Reel can't run from inside the ZIP.)
+   - **Mac:** double-click the ZIP.
+3. Move the unzipped folder somewhere you'll find it again, such as Documents.
 
-```bash
-cd reel
-```
+### Step 3 — Start Reel
 
-No git? On the GitHub page click **Code → Download ZIP**, unzip it, and `cd` into the unzipped folder instead
-(for example `cd Downloads/reel-master`).
+Open the folder and double-click the starter for your computer:
 
-### 2. Install and start
+| Your computer | Double-click |
+| --- | --- |
+| Windows | `Start Reel (Windows).bat` |
+| Mac | `Start Reel (Mac).command` |
+| Linux | run `./start.sh` in a terminal |
 
-```bash
-npm install
-```
+A black text window opens. **The first time**, it installs a few components and downloads the movie and TV
+catalog (about 700 MB). This takes 3–10 minutes and only happens once. When it's done, Reel opens in your
+web browser at **http://localhost:4317**.
 
-```bash
-npm run reel
-```
-
-`npm run reel` does the rest. **The first time**, it downloads the movie and TV catalog (about 700 MB) and
-builds a local database, which takes 3–10 minutes and only happens once. Then it starts Reel and opens
-**http://localhost:4317** in your browser.
-
-Leave the terminal open while you use Reel. Press **Ctrl+C** in it to stop.
+**Keep the text window open while you use Reel.** Closing it stops Reel.
 
 ### Every time after that
 
-From the `reel` folder:
+Double-click the same starter. It opens in a few seconds.
 
-```bash
-npm run reel
-```
-
-It starts in a few seconds.
-
-### Troubleshooting
+### If something goes wrong
 
 | What you see | What to do |
 | --- | --- |
-| `node` or `npm` "is not recognized" / "command not found" | Node.js isn't installed, or the terminal was open while you installed it. Install it, then close and reopen the terminal. |
-| "Reel needs Node.js 20 or newer" | Install the current LTS from nodejs.org and try again. |
-| `npm install` fails while building `better-sqlite3` | You're on a Node.js version without a ready-made build. Switch to the current LTS version. |
-| The catalog download stops or fails part-way | Run `npm run reel` again. Files already downloaded are kept. |
-| The browser doesn't open by itself | Go to **http://localhost:4317** yourself. |
-| "Port 4317 is already in use" | Reel is already running in another terminal. Open **http://localhost:4317**, or start on another port: `PORT=4400 npm run reel` (PowerShell: `$env:PORT=4400; npm run reel`). |
+| **Windows:** "Windows protected your PC" | Click **More info**, then **Run anyway**. This appears because the starter is a plain script, not a signed app. |
+| **Mac:** "cannot be opened because it is from an unidentified developer" | Right-click the starter → **Open** → **Open**. You only need to do this once. |
+| **Mac:** nothing happens, or "permission denied" | Open the Terminal app, type `chmod +x ` (with the space), drag the starter file into the window, press Enter, then try again. |
+| "Reel needs Node.js" | Do Step 1, then double-click the starter again. |
+| The download stops or fails part-way | Just double-click the starter again. It picks up where it left off. |
+| The browser doesn't open by itself | Open your browser and go to **http://localhost:4317** |
+| "Port 4317 is already in use" | Reel is probably already running in another window. Go to **http://localhost:4317** |
 
 ### Updating, moving and removing
 
-- **Newer version of Reel:** `git pull`, then `npm install`, then `npm run reel`.
-- **Fresh ratings and new releases:** delete `data/catalog.db` and run `npm run reel`; it rebuilds the catalog
-  with the latest data.
+- **Fresh ratings and new releases:** delete the file `data/catalog.db` and start Reel again. It rebuilds the
+  catalog with the latest data.
 - **Your ratings, watchlist and settings** live in `data/user.db`. Copy that file to back it up or move it to
   another computer.
-- **Uninstall:** delete the folder. Nothing is installed anywhere else.
+- **Uninstall:** delete the Reel folder. Nothing is installed anywhere else (apart from Node.js).
 
 ---
 
@@ -121,20 +127,24 @@ Hover the small **i** next to any filter for an explanation, or click **How scor
 
 ## For developers
 
-`npm run reel` runs `scripts/launch.mjs`, which is just these steps with checks around them:
+```bash
+npm install
+npm run reel      # does everything: catalog, build, start, open browser
+```
+
+Or step by step:
 
 ```bash
 npm run catalog   # downloads IMDb datasets and builds data/catalog.db (add -- --refresh to re-download)
 npm run build     # builds the UI into dist/
 npm start         # serves API + UI on http://localhost:4317
+npm run dev       # hot-reload UI on http://localhost:5317, API on 4317
 ```
-
-For UI work, `npm run dev` gives hot reload on http://localhost:5317 with the API on 4317.
 
 Environment variables: `PORT` (default 4317) and `HOST` (default `127.0.0.1`). Reel has no login, so it only
 accepts connections from the same computer unless you set `HOST=0.0.0.0` on a network you trust.
 
-- `scripts/launch.mjs` – the one-step launcher behind `npm run reel`
+- `scripts/launch.mjs` – the one-step launcher used by the starters
 - `server/build-catalog.mjs` – builds the catalog database
 - `server/providers.mjs` – Rotten Tomatoes / Wikidata / TMDB / OMDb lookups and caching
 - `server/tvstats.mjs` – episode-level TV analytics
