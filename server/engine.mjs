@@ -1,5 +1,5 @@
 // Taste profile, scoring and candidate ranking.
-import { db } from './db.mjs';
+import { db, getSetting } from './db.mjs';
 import { tvVerdicts } from './tvstats.mjs';
 
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
@@ -7,7 +7,7 @@ export const RATING_LABEL = { 2: 'loved', 1: 'liked', '-1': 'meh', '-2': 'dislik
 
 const BASE_COLS = `t.id, t.type, t.title, t.year, t.end_year, t.runtime, t.genres, t.rating, t.votes, t.bayes, t.directors, t.kind,
   e.rt_aud, e.rt_crit, e.omdb_rt_crit, e.rt_slug, e.rt_checked, e.rt_aud_count, e.metacritic, e.tmdb_score, e.poster, e.plot,
-  e.omdb_checked, e.tmdb_checked, e.providers, e.rt_watch,
+  e.omdb_checked, e.tmdb_checked, e.providers, e.rt_watch, e.csm_checked, e.csm, e.va_checked, e.va,
   r.value AS my_rating, (w.title_id IS NOT NULL) AS watchlisted,
   s.seasons, s.eps, s.ep_avg, s.consistency, s.landing, s.retention, s.hype_gap, s.peak_season, s.good_through, s.worth, s.ended`;
 const BASE_FROM = `FROM titles t
@@ -140,7 +140,58 @@ export const serviceKey = (name) => {
   return n.trim();
 };
 
+// ---------- Content levels & VidAngel ----------
+export const CONTENT_CATS = [
+  { key: 'sex', label: 'Sex & nudity', short: 'Sex/nudity' },
+  { key: 'violence', label: 'Violence', short: 'Violence' },
+  { key: 'language', label: 'Language', short: 'Language' },
+  { key: 'drugs', label: 'Drugs & alcohol', short: 'Drugs' },
+];
+const lvl = (v) => (Number.isFinite(+v) ? Math.min(5, Math.max(0, Math.round(+v))) : 0);
+/** The saved content rules in a safe shape, or null when content ratings are off. */
+export function contentRules() {
+  const c = getSetting('content');
+  if (!c?.enabled) return null;
+  const rules = {};
+  for (const { key } of CONTENT_CATS) rules[key] = { flag: lvl(c.rules?.[key]?.flag), hide: lvl(c.rules?.[key]?.hide) };
+  const out = { rules, hideUnknown: !!c.hideUnknown, vaRescue: !!c.vaRescue };
+  out.filters = out.hideUnknown || Object.values(rules).some((r) => r.hide > 0);
+  return out;
+}
+const json = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+/** Adds content levels, flags, the hide verdict and VidAngel availability to a decorated title. */
+function addContent(out, t, rules, showVa) {
+  const csm = json(t.csm), va = json(t.va);
+  out.contentChecked = !!t.csm_checked;
+  out.content = csm?.levels ? { ...csm.levels, age: csm.age ?? null, mpaa: csm.mpaa ?? null, url: `https://www.commonsensemedia.org/${csm.slug}` } : null;
+  out.vaChecked = !!t.va_checked;
+  out.va = (showVa || rules?.vaRescue) && va ? { available: !!va.available, via: va.via || [], url: va.available ? `https://www.vidangel.com/${va.kind}/${va.slug}` : null, cats: va.cats || null, show: !!showVa } : null;
+  out.flags = [];
+  out.contentPass = true;
+  if (!rules) return;
+  if (!out.content) { out.contentPass = out.contentChecked ? !rules.hideUnknown : (rules.filters ? null : true); return; }
+  let over = false;
+  for (const c of CONTENT_CATS) {
+    const level = out.content[c.key] ?? 0, r = rules.rules[c.key];
+    const hit = r.hide > 0 && level >= r.hide;
+    if (hit) over = true;
+    if (hit || (r.flag > 0 && level >= r.flag)) out.flags.push({ key: c.key, label: c.short, level, over: hit });
+  }
+  if (over) {
+    // "Keep what VidAngel can filter": an over-the-limit title stays if VidAngel can clean it up.
+    if (!rules.vaRescue) out.contentPass = false;
+    else out.contentPass = out.vaChecked ? !!va?.available : null;
+    out.rescued = out.contentPass === true;
+  }
+}
+
 const peopleOf = db.prepare('SELECT person_id FROM title_people WHERE title_id=?');
+let ruleCache = { at: 0 };
+const liveRules = () => {
+  if (Date.now() - ruleCache.at > 1000) ruleCache = { at: Date.now(), rules: contentRules(), va: !!getSetting('vidangel') };
+  return ruleCache;
+};
+export const invalidateRules = () => { ruleCache = { at: 0 }; };
 export function decorate(t, profile, { withPeople = true } = {}) {
   if (withPeople && profile && Object.keys(profile.people).length) t._people = peopleOf.all(t.id).map((r) => r.person_id);
   const { match, reasons } = tasteMatch(t, profile);
@@ -154,6 +205,8 @@ export function decorate(t, profile, { withPeople = true } = {}) {
     poster: t.poster, plot: t.plot, myRating: t.my_rating ?? null, watchlisted: !!t.watchlisted,
     score, match, reasons, watch: whereToWatch(t), watchChecked: !!(t.tmdb_checked || t.rt_watch),
   };
+  const rc = liveRules();
+  addContent(out, t, rc.rules, rc.va);
   if (t.type === 'tv' && t.worth != null) {
     out.tv = { seasons: t.seasons, eps: t.eps, epAvg: t.ep_avg, consistency: t.consistency, landing: t.landing, retention: t.retention, hypeGap: t.hype_gap, peakSeason: t.peak_season, goodThrough: t.good_through, worth: t.worth, ended: !!t.ended };
     out.verdicts = tvVerdicts({ ...t, season_means: null }).slice(0, 2);
@@ -226,6 +279,7 @@ export function passesExternal(d, f, src) {
     if (!d.watch) checks.push(d.rtChecked || d.watchChecked ? false : null);
     else { const want = new Set(f.services.map(serviceKey)); checks.push(d.watch.stream.some((n) => want.has(serviceKey(n)))); }
   }
+  if (f.content) checks.push(d.contentPass);
   if (checks.includes(false)) return false;
   if (checks.includes(null)) return null;
   return true;

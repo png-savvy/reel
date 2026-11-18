@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { api } from './api.js';
 import { useApp } from './App.jsx';
-import { Modal, Toggle } from './components.jsx';
+import { Modal, Toggle, ServicePicker, ContentSettings } from './components.jsx';
 import { RateGrid } from './pages.jsx';
 
 export function CatalogMissing({ onRetry }) {
@@ -79,6 +79,10 @@ export function SettingsModal({ onClose }) {
             <input id="region" maxLength={2} value={region} onChange={(e) => setRegion(e.target.value.toUpperCase())}
               onBlur={() => { if (/^[A-Z]{2}$/.test(region)) api.saveSettings({ region }).then(refreshStatus); }} style={{ width: 64 }} /></div>
         )}
+        <h3>Your streaming services</h3>
+        <div className="source-card"><ServicePicker /></div>
+        <h3>Content filters</h3>
+        <div className="sources"><ContentSettings /></div>
         <p className="muted small">Catalog last built {status.builtAt ? new Date(status.builtAt).toLocaleDateString() : '—'}. Run <code>npm run catalog -- --refresh</code> to pull the latest titles and ratings.</p>
         <div className="modal-foot"><button className="btn primary" onClick={onClose}>Done</button></div>
       </div>
@@ -159,6 +163,8 @@ export function ScoreGuide({ onClose }) {
           <dd>Show-level scores run high because people who quit a show rarely come back to rate it. So Reel starts from a blend of the show’s IMDb rating (55%) and the average of all its episode ratings (45%), then: subtracts up to 15 points if the final season is rated below the rest, subtracts for uneven episode quality, and adds or removes a few points depending on whether as many people were rating the last season as the first.</dd>
           <dt>Match %</dt>
           <dd>How well a title fits your ratings: genres and decades you tend to rate up or down, directors and writers you’ve loved, and — with TMDB connected — what fans of your favourites also liked. Appears after you’ve rated three titles.</dd>
+          <dt>Content levels</dt>
+          <dd>Sex & nudity, violence, language and drugs, each 0 (none) to 5 (severe), from Common Sense Media’s reviews. In Settings you choose, per category, the level at which a title gets a flag and the level at which it is hidden.</dd>
           <dt>“Best for me” order</dt>
           <dd>60% quality score, 40% match.</dd>
         </dl>

@@ -1,17 +1,29 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api.js';
 import { useApp } from './App.jsx';
-import { Poster, RateButtons, Row, ScoreChips, ScoreRing, Skeletons, Slider, TitleCard, Toggle, useEnriched, fmtRuntime, yearSpan, yearAndLength, RATINGS, Icon, InfoTip, StepSlider, CountLine } from './components.jsx';
+import { Poster, RateButtons, Row, ScoreChips, ScoreRing, Skeletons, Slider, TitleCard, Toggle, useEnriched, fmtRuntime, yearSpan, yearAndLength, RATINGS, Icon, InfoTip, StepSlider, CountLine, ServicePicker } from './components.jsx';
 
 const noun = (type, n = 2) => (type === 'tv' ? (n === 1 ? 'show' : 'shows') : n === 1 ? 'movie' : 'movies');
 
 // ============================== HOME ==============================
+// Non-empty only when the global "only on my services" switch is on and usable; changes when the list does.
+const servicesKey = (status) => (status.settings.onlyMyServices && status.settings.services?.length ? status.settings.services.join('|') : '');
+// Changes whenever the content rules or the VidAngel switch do, so lists rebuild.
+const contentKey = (status) => JSON.stringify([status.settings.content?.enabled ? status.settings.content : 0, !!status.settings.vidangel]);
+
 export function Home() {
-  const { type, setView, version, status } = useApp();
+  const { type, setView, version, status, openSettings } = useApp();
   const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
   const loadedVersion = useRef(-1);
+  const svcKey = servicesKey(status);
+  const globalKey = svcKey + contentKey(status);
+  const loadedSvc = useRef(globalKey);
   const rated = status.rated?.[type] || 0;
-  const load = () => api.home(type).then((d) => { setData(d); loadedVersion.current = version; });
+  const seed = useRef(0);
+  const load = () => { setBusy(true); return api.home(type, seed.current).then((d) => { setData(d); loadedVersion.current = version; }).finally(() => setBusy(false)); };
+  // "Refresh suggestions": same quality bar, different titles.
+  const reshuffle = () => { seed.current = Math.floor(Math.random() * 1e9) + 1; window.scrollTo({ top: 0, behavior: 'smooth' }); return load(); };
   const stale = !!data && loadedVersion.current !== version;
   useEffect(() => {
     if (loadedVersion.current === version && data) return;
@@ -21,6 +33,8 @@ export function Home() {
     const t = setTimeout(load, data ? 1500 : 0);
     return () => clearTimeout(t);
   }, [type, version]); // eslint-disable-line
+  // Changing the streaming-services setting always rebuilds the lists.
+  useEffect(() => { if (loadedSvc.current === globalKey) return; loadedSvc.current = globalKey; setData(null); load(); }, [globalKey]); // eslint-disable-line
 
   return (
     <div className="home">
@@ -37,8 +51,24 @@ export function Home() {
       {stale && rated >= 10 && (
         <div className="refresh-bar"><span>You’ve rated more since these lists were built.</span><button className="btn sm" onClick={load}>Refresh picks</button></div>
       )}
-      {!data && <section className="row"><div className="row-head"><div><h2>Loading…</h2></div></div><div className="row-scroll"><Skeletons n={8} /></div></section>}
-      {data?.rows.map((r) => <Row key={r.key} title={r.title} subtitle={r.subtitle} items={r.items} showWhy={r.key === 'foryou'} hideDone />)}
+      {(data?.services || data?.content) && (
+        <div className="refresh-bar">
+          <span>{[data.services && `Only showing what’s on ${data.services.join(', ')}.`, data.content && 'Titles over your content limits are hidden.', data.partial && 'Still checking, so some rows are short.'].filter(Boolean).join(' ')}</span>
+          <span className="row-tools">
+            {data.partial && <button className="btn sm" disabled={busy} onClick={load}>{busy ? 'Checking…' : 'Check for more'}</button>}
+            <button className="btn sm ghost" onClick={openSettings}>Change</button>
+          </span>
+        </div>
+      )}
+      {(data?.services || data?.content) && !data.rows.length && <div className="empty"><h3>Nothing confirmed yet</h3><p>{data.partial ? 'Reel is still looking titles up. Check for more in a moment.' : 'Try loosening your streaming or content settings.'}</p></div>}
+      {!data && <section className="row"><div className="row-head"><div><h2>{svcKey ? 'Checking what’s on your services…' : status.settings.content?.enabled ? 'Checking content ratings…' : 'Loading…'}</h2>{svcKey && <p>The first time takes a little while. Results are remembered.</p>}</div></div><div className="row-scroll"><Skeletons n={8} /></div></section>}
+      {data && data.rows.length > 0 && (
+        <div className="suggest-head">
+          <span className="muted small">{seed.current ? 'Showing a fresh mix.' : 'Showing your top suggestions.'}</span>
+          <button className="btn sm" disabled={busy} onClick={reshuffle}>{busy ? 'Refreshing…' : '↻ Refresh suggestions'}</button>
+        </div>
+      )}
+      {data?.rows.map((r) => <Row key={`${r.key}-${seed.current}`} title={r.title} subtitle={r.subtitle} items={r.items} showWhy={r.key === 'foryou'} hideDone />)}
     </div>
   );
 }
@@ -47,16 +77,17 @@ function Pick() {
   const { type, openTitle, actions, merge, status, setView } = useApp();
   const [skip, setSkip] = useState(0);
   const [state, setState] = useState({ loading: true });
+  const svcKey = servicesKey(status);
   useEffect(() => {
     let live = true;
     setState((s) => ({ ...s, loading: true }));
     api.pick(type, skip).then((d) => live && setState({ loading: false, ...d })).catch(() => live && setState({ loading: false, pick: null }));
     return () => { live = false; };
-  }, [type, skip]);
+  }, [type, skip, svcKey, contentKey(status)]); // eslint-disable-line
   const raw = state.pick;
   if (state.loading && !raw) return <div className="pick skeleton-pick"><div className="spinner" /><span>Finding tonight’s pick{status.sources.rt ? ' and checking its scores' : ''}…</span></div>;
   if (!raw) return (
-    <div className="pick empty"><div><h2>No pick fits your filters right now</h2><p className="muted">Your Discover filters are strict enough that nothing unseen passes. Loosen them a little.</p></div>
+    <div className="pick empty"><div><h2>No pick fits your filters right now</h2><p className="muted">{state.services ? `Nothing unseen that passes your filters could be confirmed on ${state.services.join(', ')}. Loosen the filters or add a service.` : 'Your Discover filters are strict enough that nothing unseen passes. Loosen them a little.'}</p></div>
       <button className="btn" onClick={() => setView('discover')}>Adjust filters</button></div>
   );
   const item = merge(raw);
@@ -105,7 +136,6 @@ const SORTS = [
 ];
 const RT_COUNTS = [0, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000];
 const IMDB_COUNTS = [0, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 1500000, 2000000];
-const SERVICES = ['Netflix', 'Prime Video', 'Max', 'Hulu', 'Disney+', 'Apple TV+', 'Peacock', 'Paramount+'];
 const FAME = [{ v: 0, l: 'Any' }, { v: 1000, l: '1k+' }, { v: 10000, l: '10k+' }, { v: 50000, l: '50k+' }, { v: 200000, l: '200k+' }];
 const PRESETS = {
   movie: [
@@ -128,9 +158,7 @@ export function Discover() {
   const src = status.sources;
   const [f, setF] = useState(() => ({ ...DEFAULT_FILTERS[type], ...(status.settings.filters?.[type] || {}), type }));
   const [genres, setGenres] = useState([]);
-  const [services, setServices] = useState(status.settings.services || []);
-  const toggleService = (sv) => setServices((cur) => { const next = cur.includes(sv) ? cur.filter((x) => x !== sv) : [...cur, sv]; api.saveSettings({ services: next }); status.settings.services = next; return next; });
-  const query = (filters) => ({ ...filters, services: filters.onMyServices && services.length ? services : undefined });
+  const svcKey = servicesKey(status);
   const [res, setRes] = useState({ items: [], loading: true });
   const [more, setMore] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
@@ -143,8 +171,8 @@ export function Discover() {
     ctl.current?.abort();
     ctl.current = new AbortController();
     setRes((r) => ({ ...r, loading: true }));
-    api.discover(query(filters), 0, ctl.current.signal).then((d) => setRes({ ...d, loading: false })).catch((e) => { if (e.name !== 'AbortError') setRes({ items: [], loading: false, error: e.message }); });
-  }, [services]); // eslint-disable-line
+    api.discover(filters, 0, ctl.current.signal).then((d) => setRes({ ...d, loading: false })).catch((e) => { if (e.name !== 'AbortError') setRes({ items: [], loading: false, error: e.message }); });
+  }, []); // eslint-disable-line
 
   // Debounced reload + persist whenever filters change.
   useEffect(() => {
@@ -154,13 +182,13 @@ export function Discover() {
       first.current = false;
     }, first.current ? 0 : 350);
     return () => clearTimeout(t);
-  }, [f, services, src.rt, src.omdb, src.tmdb]); // eslint-disable-line
+  }, [f, svcKey, contentKey(status), src.rt, src.omdb, src.tmdb]); // eslint-disable-line
 
   const loadMore = async () => {
     if (res.nextCursor == null || more) return;
     setMore(true);
     try {
-      const d = await api.discover(query(f), res.nextCursor);
+      const d = await api.discover(f, res.nextCursor);
       setRes((r) => ({ ...d, items: [...r.items, ...d.items.filter((x) => !r.items.some((y) => y.id === x.id))], checked: (r.checked || 0) + d.checked, rejected: (r.rejected || 0) + d.rejected, loading: false }));
     } finally { setMore(false); }
   };
@@ -176,7 +204,7 @@ export function Discover() {
   const enriched = useEnriched(res.items, !res.loading);
   // Rated or hidden titles drop out of the grid straight away (the toast offers Undo).
   const items = enriched.filter((it) => { const m = merge(it); return !m.dismissed && !(f.hideSeen && m.myRating); });
-  const activeCount = useMemo(() => ['minRtAud', 'minRtAudN', 'onMyServices', 'minRtCrit', 'minImdb', 'minScore', 'minMeta', 'minWorth', 'yearMin', 'yearMax', 'runtimeMax', 'minVotes', 'maxSeasons', 'minSeasons', 'endedOnly', 'goodEnding', 'consistent', 'retained', 'miniseries'].filter((k) => f[k]).length + (f.genres?.length || 0) + (f.exclude?.length || 0), [f]);
+  const activeCount = useMemo(() => ['minRtAud', 'minRtAudN', 'minRtCrit', 'minImdb', 'minScore', 'minMeta', 'minWorth', 'yearMin', 'yearMax', 'runtimeMax', 'minVotes', 'maxSeasons', 'minSeasons', 'endedOnly', 'goodEnding', 'consistent', 'retained', 'miniseries'].filter((k) => f[k]).length + (f.genres?.length || 0) + (f.exclude?.length || 0) + (svcKey ? 1 : 0), [f, svcKey]);
   const rtNote = <button className="link" onClick={openSettings}>Turn on Rotten Tomatoes scores</button>;
 
   return (
@@ -209,14 +237,12 @@ export function Discover() {
 
         <div className="fgroup">
           <h3>Streaming</h3>
-          <Toggle label="Only on my services" checked={f.onMyServices} onChange={(v) => set({ onMyServices: v })}
-            info={src.tmdb ? 'Uses JustWatch data via TMDB for your region. Availability changes often, so double-check before you sit down.' : 'Without a TMDB key this relies on Rotten Tomatoes, which only lists its partner services — titles that are available can be wrongly hidden.'} />
-          <div className="genre-chips">
-            {SERVICES.map((sv) => <button key={sv} className={services.includes(sv) ? 'inc' : ''} onClick={() => toggleService(sv)}>{services.includes(sv) ? '✓ ' : ''}{sv}</button>)}
-          </div>
-          {f.onMyServices && !services.length && <p className="note warn">Pick at least one service above.</p>}
-          {f.onMyServices && services.length > 0 && !src.tmdb && src.rt && <p className="note">May be incomplete: Rotten Tomatoes only lists some services, so this can hide titles you could actually stream. <button className="link" onClick={openSettings}>Connect TMDB</button> for accurate results.</p>}
-          {f.onMyServices && !src.tmdb && !src.rt && <p className="note warn">Needs Rotten Tomatoes or TMDB turned on in <button className="link" onClick={openSettings}>Settings</button>.</p>}
+          <ServicePicker />
+        </div>
+
+        <div className="fgroup">
+          <h3>Content</h3>
+          <p className="note">{!status.settings.content?.enabled ? 'Content ratings are off.' : res.content ? 'Titles over your content limits are hidden.' : 'Content flags are on; nothing is hidden.'} <button className="link" onClick={openSettings}>{status.settings.content?.enabled ? 'Change' : 'Set up content filters'}</button></p>
         </div>
 
         {type === 'tv' && (
@@ -265,7 +291,7 @@ export function Discover() {
           </div>
         </div>
         <div className="results-status" aria-live="polite">
-          {res.loading ? <><span className="spinner sm" /> {src.rt && (f.minRtAud || f.minRtAudN || f.minRtCrit || f.onMyServices) ? 'Checking scores on Rotten Tomatoes — first time takes a few seconds…' : 'Searching…'}</>
+          {res.loading ? <><span className="spinner sm" /> {src.rt && (f.minRtAud || f.minRtAudN || f.minRtCrit || svcKey) ? 'Checking scores on Rotten Tomatoes — first time takes a few seconds…' : 'Searching…'}</>
             : res.error ? <span className="bad">{res.error}</span>
               : res.verified ? <>Showing <b>{items.length}</b> that passed · checked {res.checked} against your score bar, {res.rejected} didn’t make it</>
                 : <><b>{res.total >= 700 ? '700+' : res.total}</b> {noun(type, res.total)} match{res.total === 1 ? 'es' : ''}{f.sort === 'match' && res.profileCount < 3 ? ' · rate a few titles to personalise the order' : ''}</>}

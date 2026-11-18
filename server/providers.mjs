@@ -4,7 +4,7 @@ import { db, getSetting } from './db.mjs';
 
 const UA = 'Reel/0.1 (personal movie-finder app)';
 const DAY = 86400e3;
-const TTL = { wd: 60 * DAY, rt: 14 * DAY, omdb: 30 * DAY, tmdb: 30 * DAY };
+const TTL = { wd: 60 * DAY, rt: 14 * DAY, omdb: 30 * DAY, tmdb: 30 * DAY, csm: 90 * DAY, va: 7 * DAY };
 const now = () => Date.now();
 const fresh = (ts, ttl) => ts && now() - ts < ttl;
 
@@ -29,6 +29,8 @@ function limiter(concurrency, gapMs = 0) {
 }
 const rtLimit = limiter(3, 150);
 const apiLimit = limiter(6);
+const csmLimit = limiter(2, 200);
+const vaLimit = limiter(1, 400);
 
 async function get(url, opts = {}, as = 'json') {
   const res = await fetch(url, { ...opts, headers: { 'User-Agent': UA, ...(opts.headers || {}) }, signal: AbortSignal.timeout(12000) });
@@ -196,11 +198,88 @@ async function fetchTmdb(title, key) {
   update(title.id, fields);
 }
 
+// ---------- Common Sense Media: content levels (0-5) from the public review page ----------
+// Only the numeric levels, age and MPA rating are kept; the written review stays on their site.
+const csmSlug = (t) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/&/g, 'and').replace(/['’.:,!?]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+function parseCsm(html) {
+  const levels = {};
+  for (const m of html.matchAll(/<button id="content-grid-item-(sex|violence|language|drugs)"[\s\S]*?<\/button>/g)) levels[m[1]] = (m[0].match(/icon-circle-solid active/g) || []).length;
+  if (!Object.keys(levels).length) return null;
+  const out = { levels, imdb: null, year: null, age: null, mpaa: null };
+  for (const m of html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)) {
+    const id = m[1].match(/imdb\.com\\?\/title\\?\/(tt\d+)/);
+    if (id) { out.imdb = id[1]; break; }
+  }
+  const date = html.match(/class="detail--(?:release-dates-theaters|premiere-date|release-dates-dvd)">\s*([^<]+)</);
+  const y = date && date[1].match(/(\d{4})/);
+  if (y) out.year = +y[1];
+  const age = html.match(/age (\d+)\+/);
+  if (age) out.age = +age[1];
+  const mpaa = html.match(/class="detail--mpaa-rating">\s*([^<\s][^<]*?)\s*</);
+  if (mpaa && mpaa[1].length <= 8) out.mpaa = mpaa[1];
+  return out;
+}
+async function fetchCsm(title) {
+  const base = (title.type === 'movie' ? 'movie-reviews/' : 'tv-reviews/') + csmSlug(title.title);
+  const tries = [base, ...(title.year ? [`${base}-${title.year}`] : []), `${base}-0`];
+  for (const slug of tries) {
+    try {
+      const html = await csmLimit(() => get(`https://www.commonsensemedia.org/${slug}`, {}, 'text'));
+      const p = parseCsm(html);
+      if (!p) continue;
+      // Same-named titles share slugs, so the page must name this IMDb id (or, failing that, the same year).
+      const same = p.imdb ? p.imdb === title.id : (p.year && title.year && Math.abs(p.year - title.year) <= 1);
+      if (!same) continue;
+      update(title.id, { csm_checked: now(), csm: JSON.stringify({ slug, levels: p.levels, age: p.age, mpaa: p.mpaa }) });
+      return;
+    } catch (e) {
+      if (e.status !== 404) { console.warn('[csm]', title.title, e.message); throw e; }
+    }
+  }
+  update(title.id, { csm_checked: now(), csm: null });
+}
+
+// ---------- VidAngel: is the title in their filterable catalogue? ----------
+const VA = 'https://api.vidangel.com/api/';
+const plain = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '');
+async function fetchVa(title) {
+  const d = await vaLimit(() => get(`${VA}content/search/?q=${encodeURIComponent(title.title)}`));
+  const kind = title.type === 'movie' ? 'movie' : 'show';
+  const hit = (d.titles || []).find((w) => w.type === kind && w.enabled !== false && plain(w.title) === plain(title.title) && (!w.year || !title.year || Math.abs(w.year - title.year) <= 1));
+  const va = hit
+    ? { available: true, slug: hit.slug, kind, via: [...new Set((hit.offering_groups || []).flatMap((g) => g.catalogs.map((c) => c.title)))] }
+    : { available: false };
+  update(title.id, { va_checked: now(), va: JSON.stringify(va) });
+}
+/** For the title page: how many moments VidAngel has tagged in each category. Movies only (shows are tagged per episode). */
+export async function vaDetail(title) {
+  const ext = getExt.get(title.id) || {};
+  let va; try { va = JSON.parse(ext.va || 'null'); } catch { va = null; }
+  if (!va?.available || va.kind !== 'movie' || va.cats || now() < vaBlockedUntil) return;
+  try {
+    const m = (await vaLimit(() => get(`${VA}content/v2/movies/?slug=${encodeURIComponent(va.slug)}`))).results?.[0];
+    if (!m) return;
+    if (m.imdb_id && m.imdb_id !== title.id) { update(title.id, { va: JSON.stringify({ available: false }) }); return; }
+    const set = m.offerings?.find((o) => o.tag_set_id)?.tag_set_id;
+    va.cats = [];
+    if (set) {
+      const p = await vaLimit(() => get(`${VA}bff/filter-preview/${set}/`));
+      va.cats = (p.categories || []).filter((c) => c.count > 0 && !/credits/i.test(c.display_title)).map((c) => ({ name: c.display_title, count: c.count }));
+    }
+    update(title.id, { va: JSON.stringify(va) });
+  } catch (e) { console.warn('[vidangel]', title.title, e.message); }
+}
+
 // ---------- Orchestration ----------
 export function sourcesEnabled() {
-  return { rt: !!getSetting('rtEnabled'), omdb: !!getSetting('omdbKey'), tmdb: !!getSetting('tmdbKey') };
+  const c = getSetting('content');
+  return { rt: !!getSetting('rtEnabled'), omdb: !!getSetting('omdbKey'), tmdb: !!getSetting('tmdbKey'), csm: !!c?.enabled, va: !!getSetting('vidangel') || !!(c?.enabled && c.vaRescue) };
 }
 let rtBlockedUntil = 0;
+let csmBlockedUntil = 0;
+// VidAngel refuses requests (403) when it sees too many; stop asking for an hour rather than keep knocking.
+let vaBlockedUntil = 0;
+export const vaStatus = () => ({ blocked: now() < vaBlockedUntil });
 export const rtStatus = () => ({ blocked: now() < rtBlockedUntil });
 
 const inflight = new Map();
@@ -219,6 +298,12 @@ export async function enrich(titles, { only } = {}) {
     if (want('omdb') && !fresh(ext.omdb_checked, TTL.omdb)) jobs.push(fetchOmdb(t, getSetting('omdbKey')).catch((e) => console.warn('[omdb]', e.message)));
     if (want('rt') && (!fresh(ext.rt_checked, TTL.rt) || ext.rt_watch == null) && now() >= rtBlockedUntil) {
       jobs.push(fetchRt(t).catch((e) => { if (e.status === 403 || e.status === 429) rtBlockedUntil = now() + 10 * 60e3; }));
+    }
+    if (want('csm') && !fresh(ext.csm_checked, TTL.csm) && now() >= csmBlockedUntil) {
+      jobs.push(fetchCsm(t).catch((e) => { if (e.status === 403 || e.status === 429) csmBlockedUntil = now() + 10 * 60e3; }));
+    }
+    if (want('va') && !fresh(ext.va_checked, TTL.va) && now() >= vaBlockedUntil) {
+      jobs.push(fetchVa(t).catch((e) => { if (e.status === 403 || e.status === 429) { if (now() >= vaBlockedUntil) console.warn('[vidangel] refused, pausing for an hour'); vaBlockedUntil = now() + 60 * 60e3; } else console.warn('[vidangel]', t.title, e.message); }));
     }
     if (!jobs.length) return null;
     const p = Promise.all(jobs).finally(() => inflight.delete(t.id));

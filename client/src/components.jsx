@@ -120,6 +120,7 @@ export function TitleCard({ item: raw, showWhy = false }) {
         {item.type === 'tv' && item.verdicts?.[0] && <div className={`verdict ${item.verdicts[0].tone}`} title={item.verdicts[0].detail}>{item.verdicts[0].label}</div>}
         <CountLine item={item} />
         <WatchLine watch={item.watch} />
+        <ContentLine item={item} />
         {showWhy && item.reasons?.[0] && <div className="why">{item.reasons[0].text}</div>}
       </div>
     </article>
@@ -131,10 +132,10 @@ export function useEnriched(items, active = true) {
   const { status } = useApp();
   const [extra, setExtra] = useState({});
   const tried = useRef(new Set());
-  const any = status.sources.rt || status.sources.tmdb || status.sources.omdb;
+  const any = status.sources.rt || status.sources.tmdb || status.sources.omdb || status.sources.csm || status.sources.va;
   useEffect(() => {
     if (!active || !any || !items?.length) return;
-    const need = items.filter((it) => !tried.current.has(it.id) && ((status.sources.rt && !it.rtChecked) || ((status.sources.tmdb || status.sources.omdb) && !it.poster)));
+    const need = items.filter((it) => !tried.current.has(it.id) && ((status.sources.rt && !it.rtChecked) || ((status.sources.tmdb || status.sources.omdb) && !it.poster) || (status.sources.csm && !it.contentChecked) || (status.sources.va && !it.vaChecked)));
     if (!need.length) return;
     need.forEach((it) => tried.current.add(it.id));
     let live = true;
@@ -248,6 +249,104 @@ export function Slider({ label, hint, value, onChange, min = 0, max = 100, step 
           style={{ '--p': `${(((value || min) - min) / (max - min)) * 100}%` }}
           onChange={(e) => { const v = +e.target.value; onChange(v <= min ? 0 : v); }} />
       )}
+    </div>
+  );
+}
+
+/** Content flags (per your rules in Settings) and the VidAngel marker, shown under a card. */
+export function ContentLine({ item }) {
+  const { status } = useApp();
+  const on = status.sources.csm;
+  const va = item.va?.show && item.va.available;
+  const flags = item.flags || [];
+  const unknown = on && item.contentChecked && !item.content;
+  if (!flags.length && !va && !unknown) return null;
+  return (
+    <div className="contentline">
+      {flags.map((f) => <span key={f.key} className={`flag ${f.over ? 'over' : ''}`} title={`${f.label}: ${f.level} out of 5${f.over ? ' — over your limit' : ''}`}>{f.label} {f.level}</span>)}
+      {unknown && <span className="flag none" title="Common Sense Media has no review for this title">No content rating</span>}
+      {va && <span className="flag va" title={`VidAngel can filter this${item.va.via.length ? ` (via ${item.va.via.join(', ')})` : ''}`}>VidAngel</span>}
+    </div>
+  );
+}
+
+export const CONTENT_CATS = [
+  { key: 'sex', label: 'Sex & nudity' },
+  { key: 'violence', label: 'Violence' },
+  { key: 'language', label: 'Language' },
+  { key: 'drugs', label: 'Drugs & alcohol' },
+];
+export const LEVELS = ['None', 'Minimal', 'Mild', 'Moderate', 'Strong', 'Severe'];
+const LEVEL_OPTIONS = [[0, 'Never'], [1, '1+ Minimal'], [2, '2+ Mild'], [3, '3+ Moderate'], [4, '4+ Strong'], [5, '5 Severe']];
+export function Dots({ level }) {
+  return <span className="dots" role="img" aria-label={`${level} out of 5`}>{[1, 2, 3, 4, 5].map((i) => <i key={i} className={i <= level ? 'on' : ''} />)}</span>;
+}
+
+/** Content rules and the VidAngel switch. Saved globally; applies to every page. */
+export function ContentSettings() {
+  const { status, refreshStatus } = useApp();
+  const s = status.settings;
+  const c = { enabled: false, rules: {}, hideUnknown: false, vaRescue: false, ...(s.content || {}) };
+  const save = (patch) => api.saveSettings(patch).then(refreshStatus);
+  const setC = (patch) => save({ content: { ...c, ...patch } });
+  const setRule = (key, kind, v) => setC({ rules: { ...c.rules, [key]: { flag: 0, hide: 0, ...(c.rules[key] || {}), [kind]: v } } });
+  const hides = c.hideUnknown || CONTENT_CATS.some((k) => c.rules[k.key]?.hide > 0);
+  return (
+    <>
+      <div className={`source-card ${c.enabled ? 'on' : ''}`}>
+        <Toggle label="Content ratings" checked={c.enabled} onChange={(v) => setC({ enabled: v })} hint="Sex & nudity, violence, language, drugs — each rated 0 to 5" />
+        <p className="muted small">Levels come from Common Sense Media’s public review pages, looked up the same way as Rotten Tomatoes scores and remembered for three months. Only the numbers are stored; each title links to the full write-up.</p>
+        {c.enabled && (
+          <>
+            <div className="rules">
+              <div className="rule head"><span /><span>Flag it from</span><span>Hide it from</span></div>
+              {CONTENT_CATS.map((k) => (
+                <div className="rule" key={k.key}>
+                  <b>{k.label}</b>
+                  {['flag', 'hide'].map((kind) => (
+                    <select key={kind} aria-label={`${kind === 'flag' ? 'Flag' : 'Hide'} ${k.label} from`} value={c.rules[k.key]?.[kind] || 0} onChange={(e) => setRule(k.key, kind, +e.target.value)}>
+                      {LEVEL_OPTIONS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+                    </select>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <p className="muted small">Flagged titles stay in your lists with a label. Hidden titles are left out of For you, tonight’s pick and Discover; search and your library still show them, marked as over your limit.</p>
+            <Toggle label="Hide titles with no content rating" checked={c.hideUnknown} onChange={(v) => setC({ hideUnknown: v })} hint="Older and lesser-known titles often have none" />
+            <Toggle label="Keep titles VidAngel can filter" checked={c.vaRescue} onChange={(v) => setC({ vaRescue: v })} hint="Something over your limit stays (flagged) when it’s on VidAngel" />
+            {hides && <p className="note">With hiding on, lists take longer the first time because each title’s rating has to be looked up.</p>}
+          </>
+        )}
+      </div>
+      <div className={`source-card ${s.vidangel ? 'on' : ''}`}>
+        <Toggle label="Show VidAngel availability" checked={s.vidangel} onChange={(v) => save({ vidangel: v })} hint="Marks titles VidAngel can filter" />
+        {s.vidangel && status.va?.blocked && <p className="note warn">VidAngel is refusing lookups right now, so badges are missing. Reel pauses for an hour, then tries again.</p>}
+        <p className="muted small">Checked against VidAngel’s public catalogue weekly. VidAngel plays titles through a service you already have (Netflix, Prime Video and so on), so each title page shows which one it needs and how many moments are tagged per category.</p>
+      </div>
+    </>
+  );
+}
+
+export const SERVICES = ['Netflix', 'Prime Video', 'Max', 'Hulu', 'Disney+', 'Apple TV+', 'Peacock', 'Paramount+'];
+/** The "my streaming services" switch and service list. One saved setting, shown in Settings and in Discover. */
+export function ServicePicker() {
+  const { status, refreshStatus, openSettings } = useApp();
+  const s = status.settings, src = status.sources;
+  const mine = s.services || [];
+  const on = !!s.onlyMyServices;
+  const save = (patch) => api.saveSettings(patch).then(refreshStatus);
+  const toggle = (sv) => save({ services: mine.includes(sv) ? mine.filter((x) => x !== sv) : [...mine, sv] });
+  return (
+    <div className="service-picker">
+      <Toggle label="Only on my services" checked={on} onChange={(v) => save({ onlyMyServices: v })}
+        hint="Applies to For you, tonight’s pick and Discover"
+        info={src.tmdb ? 'Uses JustWatch data via TMDB for your region. Availability changes often, so double-check before you sit down.' : 'Without a TMDB key this relies on Rotten Tomatoes, which only lists its partner services — titles that are available can be wrongly hidden.'} />
+      <div className="genre-chips">
+        {SERVICES.map((sv) => <button key={sv} className={mine.includes(sv) ? 'inc' : ''} aria-pressed={mine.includes(sv)} onClick={() => toggle(sv)}>{mine.includes(sv) ? '✓ ' : ''}{sv}</button>)}
+      </div>
+      {on && !mine.length && <p className="note warn">Pick at least one service above.</p>}
+      {on && mine.length > 0 && !src.tmdb && src.rt && <p className="note">May be incomplete: Rotten Tomatoes only lists some services, so this can hide titles you could actually stream. Connecting TMDB in Settings (free key) makes it accurate.</p>}
+      {on && !src.tmdb && !src.rt && <p className="note warn">Needs Rotten Tomatoes or TMDB turned on in <button className="link" onClick={openSettings}>Settings</button>.</p>}
     </div>
   );
 }

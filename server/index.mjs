@@ -2,8 +2,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import express from 'express';
 import { db, ROOT, hasCatalog, getSetting, setSetting, allSettings } from './db.mjs';
-import { enrich, sourcesEnabled, testKey, rtStatus } from './providers.mjs';
-import { candidates, decorate, getProfile, invalidateProfile, passesExternal, rankValue, selectTitles } from './engine.mjs';
+import { enrich, sourcesEnabled, testKey, rtStatus, vaDetail, vaStatus } from './providers.mjs';
+import { candidates, contentRules, decorate, getProfile, invalidateProfile, invalidateRules, passesExternal, rankValue, selectTitles } from './engine.mjs';
 import { tvVerdicts } from './tvstats.mjs';
 
 const app = express();
@@ -21,12 +21,15 @@ const rowsByIds = (ids) => {
 const decorated = (ids, type) => rowsByIds(ids).map((r) => decorate(r, getProfile(type || r.type)));
 
 // ---------- status & settings ----------
+// The services switch used to be a per-page Discover filter. Until the new switch has been set either way,
+// honour the old one so nobody's filter silently turns off.
+const onlyMyServices = () => getSetting('onlyMyServices') ?? Object.values(getSetting('filters') || {}).some((f) => f?.onMyServices);
 const publicSettings = () => {
   const s = allSettings();
-  return { ...s, tmdbKey: undefined, omdbKey: undefined, hasTmdb: !!s.tmdbKey, hasOmdb: !!s.omdbKey };
+  return { ...s, onlyMyServices: onlyMyServices(), tmdbKey: undefined, omdbKey: undefined, hasTmdb: !!s.tmdbKey, hasOmdb: !!s.omdbKey };
 };
 app.get('/api/status', wrap((req, res) => {
-  const out = { catalog: hasCatalog(), settings: publicSettings(), sources: sourcesEnabled(), rt: rtStatus() };
+  const out = { catalog: hasCatalog(), settings: publicSettings(), sources: sourcesEnabled(), rt: rtStatus(), va: vaStatus() };
   if (out.catalog) {
     out.builtAt = db.prepare("SELECT value FROM meta WHERE key='built_at'").get()?.value;
     out.counts = Object.fromEntries(db.prepare('SELECT type, count(*) n FROM titles GROUP BY type').all().map((r) => [r.type, r.n]));
@@ -37,18 +40,36 @@ app.get('/api/status', wrap((req, res) => {
 }));
 
 app.post('/api/settings', wrap(async (req, res) => {
-  const allowed = ['onboarded', 'rtEnabled', 'tmdbKey', 'omdbKey', 'region', 'filters', 'services'];
+  const allowed = ['onboarded', 'rtEnabled', 'tmdbKey', 'omdbKey', 'region', 'filters', 'services', 'onlyMyServices', 'content', 'vidangel'];
   for (const k of allowed) if (k in req.body) setSetting(k, typeof req.body[k] === 'string' ? req.body[k].trim() : req.body[k]);
   if ('region' in req.body) db.exec('UPDATE ext SET tmdb_checked = NULL');
+  if ('content' in req.body || 'vidangel' in req.body) { invalidateRules(); bustLists(); }
   res.json({ settings: publicSettings(), sources: sourcesEnabled() });
 }));
 app.post('/api/settings/test', wrap(async (req, res) => res.json(await testKey(req.body.kind, String(req.body.key || '').trim()))));
+
+// The "only on my services" switch lives in Settings and applies to For you, tonight's pick and Discover.
+// Returns the chosen services, or null when the switch is off or there is no source to check against.
+const myServices = (src = sourcesEnabled()) => {
+  const list = getSetting('services') || [];
+  return onlyMyServices() && list.length && (src.rt || src.tmdb) ? list : null;
+};
+
+// Content rules also live in Settings. Truthy only when they can actually hide something; the value changes
+// whenever the rules do, so cached lists are never reused across a change.
+const contentFilter = () => { const r = contentRules(); return r?.filters ? JSON.stringify(r) : null; };
+/** Which outside sources are needed to judge the global filters (services + content). */
+const globalOnly = (src, svc, content) => [svc && src.rt && 'rt', svc && src.tmdb && 'tmdb', content && 'csm', content && src.va && contentRules()?.vaRescue && 'va'].filter(Boolean);
 
 // ---------- discover ----------
 const parseFilters = (req) => {
   let f = {};
   try { f = JSON.parse(req.query.f || '{}'); } catch { /* ignore */ }
   f.type = f.type === 'tv' ? 'tv' : 'movie';
+  const svc = myServices();
+  if (svc) f.services = svc; else delete f.services;
+  const content = contentFilter();
+  if (content) f.content = content; else delete f.content;
   if (f.sort === 'hidden' && !f.maxVotes) f.maxVotes = f.type === 'movie' ? 40000 : 25000;
   if (f.sort === 'hidden' && !f.minVotes) f.minVotes = 1500;
   return f;
@@ -70,7 +91,7 @@ app.get('/api/discover', needCatalog, wrap(async (req, res) => {
   let cursor = Math.max(0, parseInt(req.query.cursor || '0', 10));
   const list = rankedList(f);
   const wantServices = f.services?.length && (src.rt || src.tmdb);
-  const external = (f.minRtAud && src.rt) || (f.minRtAudN && src.rt) || (f.minRtCrit && (src.rt || src.omdb)) || (f.minMeta && src.omdb) || wantServices;
+  const external = (f.minRtAud && src.rt) || (f.minRtAudN && src.rt) || (f.minRtCrit && (src.rt || src.omdb)) || (f.minMeta && src.omdb) || wantServices || f.content;
   const items = [];
   let checked = 0, rejected = 0;
   const started = Date.now();
@@ -81,7 +102,7 @@ app.get('/api/discover', needCatalog, wrap(async (req, res) => {
       items.push(d.id);
     }
   } else {
-    const only = [src.rt && (f.minRtAud || f.minRtAudN || f.minRtCrit || wantServices) ? 'rt' : null, src.omdb && (f.minMeta || (f.minRtCrit && !src.rt)) ? 'omdb' : null, src.tmdb && wantServices ? 'tmdb' : null].filter(Boolean);
+    const only = [src.rt && (f.minRtAud || f.minRtAudN || f.minRtCrit || wantServices) ? 'rt' : null, src.omdb && (f.minMeta || (f.minRtCrit && !src.rt)) ? 'omdb' : null, src.tmdb && wantServices ? 'tmdb' : null, ...globalOnly(src, null, f.content)].filter(Boolean);
     while (cursor < list.length && items.length < PAGE && checked < 72 && Date.now() - started < 22000) {
       const batch = list.slice(cursor, cursor + 12);
       await enrich(batch, { only });
@@ -95,7 +116,7 @@ app.get('/api/discover', needCatalog, wrap(async (req, res) => {
   }
   res.json({
     items: decorated(items, f.type), nextCursor: cursor < list.length ? cursor : null,
-    total: list.length, verified: !!external, checked, rejected, profileCount: getProfile(f.type).count, rt: rtStatus(),
+    total: list.length, verified: !!external, checked, rejected, content: !!f.content, profileCount: getProfile(f.type).count, rt: rtStatus(),
   });
 }));
 
@@ -111,17 +132,55 @@ const take = (list, n, used) => {
   for (const d of list) { if (used.has(d.id)) continue; out.push(d); used.add(d.id); if (out.length >= n) break; }
   return out;
 };
-app.get('/api/home', needCatalog, wrap((req, res) => {
+app.get('/api/home', needCatalog, wrap(async (req, res) => {
   const type = req.query.type === 'tv' ? 'tv' : 'movie';
   const profile = getProfile(type);
   const year = new Date().getFullYear();
   const used = new Set();
   const rows = [];
-  const add = (key, title, subtitle, list, n = 14) => { const items = take(list, n, used); if (items.length >= 4) rows.push({ key, title, subtitle, items }); };
+  // With "only on my services" on, each row keeps only titles confirmed to be on one of them. Availability has
+  // to be looked up per title, so the work is capped per request; whatever was looked up is remembered, and
+  // the next load carries on from there.
+  const src = sourcesEnabled();
+  const svc = myServices(src);
+  const content = contentFilter();
+  const verify = !!(svc || content);
+  const deadline = Date.now() + 18000;
+  let partial = false;
+  const takeAvailable = async (list, n) => {
+    const only = globalOnly(src, svc, content);
+    const pool = list.filter((d) => !used.has(d.id)).slice(0, 72);
+    const out = [];
+    for (let i = 0; i < pool.length && out.length < n; i += 12) {
+      const batch = pool.slice(i, i + 12);
+      if (Date.now() < deadline) await enrich(batch, { only });
+      for (const d of decorated(batch.map((b) => b.id), type)) {
+        const ok = passesExternal(d, { services: svc, content }, src);
+        if (ok === null) partial = true;
+        if (ok === true && out.length < n && !used.has(d.id)) { out.push(d); used.add(d.id); }
+      }
+    }
+    return out;
+  };
+  // "Refresh" sends a seed: each row is then drawn in a seeded random order from its strongest candidates
+  // (about three rows' worth), so a refresh brings up different titles without dropping the quality bar.
+  let seed = parseInt(req.query.seed || '0', 10) >>> 0;
+  const rand = () => { seed = (seed + 0x6D2B79F5) >>> 0; let x = seed; x = Math.imul(x ^ (x >>> 15), x | 1); x ^= x + Math.imul(x ^ (x >>> 7), x | 61); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+  const mix = (list, n) => {
+    if (!seed) return list;
+    const head = list.slice(0, n * 3);
+    for (let i = head.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [head[i], head[j]] = [head[j], head[i]]; }
+    return [...head, ...list.slice(n * 3)];
+  };
+  const add = async (key, title, subtitle, rawList, n = 14) => {
+    const list = mix(rawList, n);
+    const items = verify ? await takeAvailable(list, n) : take(list, n, used);
+    if (items.length >= (verify ? 1 : 4)) rows.push({ key, title, subtitle, items });
+  };
   const base = { type, hideSeen: true, hideWatchlisted: true, sort: 'match' };
   const personal = profile.count >= 3;
 
-  if (personal) add('foryou', 'Picked for you', `Based on ${profile.count} ${type === 'tv' ? 'shows' : 'movies'} you've rated`,
+  if (personal) await add('foryou', 'Picked for you', `Based on ${profile.count} ${type === 'tv' ? 'shows' : 'movies'} you've rated`,
     candidates({ ...base, minVotes: type === 'movie' ? 15000 : 8000, minImdb: 6.8 }, 500));
 
   // More from people behind titles the user loved
@@ -130,27 +189,27 @@ app.get('/api/home', needCatalog, wrap((req, res) => {
     const ids = db.prepare(`SELECT t.id FROM title_people tp JOIN titles t ON t.id = tp.title_id LEFT JOIN ratings r ON r.title_id=t.id
       WHERE tp.person_id=? AND t.type=? AND (r.value IS NULL OR r.value=0) AND t.votes >= 3000
       AND NOT EXISTS (SELECT 1 FROM dismissed d WHERE d.title_id=t.id) AND NOT EXISTS (SELECT 1 FROM watchlist w WHERE w.title_id=t.id) ORDER BY t.bayes DESC LIMIT 14`).all(pid, type).map((r) => r.id);
-    add(`person-${pid}`, `More from ${p.name}`, `Because you enjoyed ${p.loved[0]}`, decorated(ids, type));
+    await add(`person-${pid}`, `More from ${p.name}`, `Because you enjoyed ${p.loved[0]}`, decorated(ids, type));
   }
 
   if (type === 'tv') {
-    add('landing', 'Sticks the landing', 'Finished shows whose final season is as good as the rest — or better',
+    await add('landing', 'Sticks the landing', 'Finished shows whose final season is as good as the rest — or better',
       candidates({ ...base, endedOnly: true, minSeasons: 2, minWorth: 80, minVotes: 10000 }, 300).filter((d) => d.tv && d.tv.landing >= 0.05));
-    add('mini', 'One and done', 'Miniseries and single-season shows you can finish in a weekend',
+    await add('mini', 'One and done', 'Miniseries and single-season shows you can finish in a weekend',
       candidates({ ...base, maxSeasons: 1, endedOnly: true, minWorth: 78, minVotes: 8000 }, 200));
-    add('consistent', 'No bad episodes', 'Multi-season shows with remarkably steady episode ratings',
+    await add('consistent', 'No bad episodes', 'Multi-season shows with remarkably steady episode ratings',
       candidates({ ...base, minSeasons: 2, consistent: true, minWorth: 80, minVotes: 15000 }, 300).filter((d) => d.tv && d.tv.consistency <= 0.38));
   }
   for (const g of profile.topGenres.slice(0, 2)) {
-    add(`genre-${g}`, `Top ${g} for you`, `You rate ${g} highly`, candidates({ ...base, genres: [g], minVotes: type === 'movie' ? 20000 : 8000 }, 200));
+    await add(`genre-${g}`, `Top ${g} for you`, `You rate ${g} highly`, candidates({ ...base, genres: [g], minVotes: type === 'movie' ? 20000 : 8000 }, 200));
   }
-  add('gems', 'Hidden gems', 'Highly rated, but most people have never heard of them',
+  await add('gems', 'Hidden gems', 'Highly rated, but most people have never heard of them',
     candidates({ ...base, sort: 'match', minVotes: 5000, maxVotes: type === 'movie' ? 40000 : 20000, minImdb: 7.4 }, 300));
-  add('recent', 'Recent standouts', `The best of ${year - 3}–${year}`,
+  await add('recent', 'Recent standouts', `The best of ${year - 3}–${year}`,
     candidates({ ...base, yearMin: year - 3, minVotes: type === 'movie' ? 20000 : 8000, minImdb: 7.1 }, 200));
-  add('greats', personal ? 'Acclaimed, and you haven\'t rated them' : 'All-time greats', 'The highest-rated of all time',
+  await add('greats', personal ? 'Acclaimed, and you haven\'t rated them' : 'All-time greats', 'The highest-rated of all time',
     candidates({ ...base, sort: 'score', minVotes: type === 'movie' ? 250000 : 60000 }, 120), 18);
-  res.json({ rows, profileCount: profile.count });
+  res.json({ rows, profileCount: profile.count, services: svc, content: !!content, partial });
 }));
 
 // Tonight's pick: one verified suggestion that honours the saved Discover filters.
@@ -162,6 +221,10 @@ app.get('/api/pick', needCatalog, wrap(async (req, res) => {
   const saved = (getSetting('filters') || {})[type] || {};
   const floor = type === 'movie' ? 25000 : 30000; // a blind pick should be something with a real track record
   const f = { minImdb: 7, ...saved, type, hideSeen: true, sort: 'match' };
+  const svc = myServices(src);
+  if (svc) f.services = svc; else delete f.services;
+  const content = contentFilter();
+  if (content) f.content = content; else delete f.content;
   if (saved.sort === 'hidden' || f.maxVotes) { f.sort = 'hidden'; if (!f.maxVotes) f.maxVotes = type === 'movie' ? 40000 : 25000; }
   else f.minVotes = Math.max(f.minVotes || 0, floor);
   const day = new Date().toISOString().slice(0, 10);
@@ -172,18 +235,21 @@ app.get('/api/pick', needCatalog, wrap(async (req, res) => {
   let seed = [...day].reduce((s, c) => (s * 31 + c.charCodeAt(0)) >>> 0, 7);
   const start = (seed % Math.min(pool.length, 5)) + skip * 3;
   let pick = null, fallback = null;
-  for (let i = 0; i < Math.min(pool.length, 10) && !pick; i++) {
+  const began = Date.now();
+  // Few titles are on any given service, so look further down the list when that filter is on.
+  for (let i = 0; i < Math.min(pool.length, svc || content ? 40 : 10) && !pick && Date.now() - began < 20000; i++) {
     const cand = pool[(start + i) % pool.length];
     await enrich([cand]);
     const d = decorated([cand.id], type)[0];
-    if (passesExternal(d, f, src) === false) continue;
+    const ok = passesExternal(d, f, src);
+    if (ok === false || ((svc || content) && ok !== true)) continue;
     // With Rotten Tomatoes on, prefer a pick whose audience score we could actually confirm.
     if (src.rt && d.rtAud == null && !rtStatus().blocked) { fallback ||= d; continue; }
     pick = d;
   }
   pick ||= fallback;
   if (pick) pickCache.set(key, pick.id);
-  res.json({ pick, filters: f });
+  res.json({ pick, filters: f, services: svc, content: !!content });
 }));
 
 // ---------- rating queue, search, library ----------
@@ -268,10 +334,10 @@ app.get('/api/title/:id', needCatalog, wrap(async (req, res) => {
   const id = req.params.id;
   let row = rowsByIds([id])[0];
   if (!row) return res.status(404).json({ error: 'not-found' });
-  if (req.query.fast !== '1') { await enrich([row]); row = rowsByIds([id])[0]; }
+  if (req.query.fast !== '1') { await enrich([row]); if (sourcesEnabled().va) await vaDetail(row); row = rowsByIds([id])[0]; }
   const d = decorate(row, getProfile(row.type));
   const ext = db.prepare('SELECT * FROM ext WHERE title_id=?').get(id) || {};
-  d.wiki = ext.wiki; d.rated = ext.rated; d.awards = ext.awards; d.backdrop = ext.backdrop; d.trailer = ext.trailer;
+  d.wiki = ext.wiki; d.rated = ext.rated || d.content?.mpaa || null; d.awards = ext.awards; d.backdrop = ext.backdrop; d.trailer = ext.trailer;
   d.cast = ext.cast ? JSON.parse(ext.cast) : (ext.actors ? ext.actors.split(', ') : null);
   d.providers = ext.providers ? JSON.parse(ext.providers) : null;
   d.imdbUrl = `https://www.imdb.com/title/${id}/`;
@@ -292,6 +358,7 @@ app.get('/api/title/:id', needCatalog, wrap(async (req, res) => {
     similar = more;
   } else d.similarLabel = 'Fans also liked';
   d.similar = decorated(similar, row.type);
+  d.vaBlocked = vaStatus().blocked;
   res.json(d);
 }));
 

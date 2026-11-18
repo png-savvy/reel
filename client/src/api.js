@@ -12,7 +12,7 @@ export const api = {
   testKey: (kind, key) => post('/settings/test', { kind, key }),
   discover: (f, cursor = 0, signal) => req(`/discover?f=${encodeURIComponent(JSON.stringify(f))}&cursor=${cursor}`, { signal }),
   enrich: (ids) => post('/enrich', { ids }),
-  home: (type) => req(`/home?type=${type}`),
+  home: (type, seed = 0) => req(`/home?type=${type}${seed ? `&seed=${seed}` : ''}`),
   pick: (type, skip = 0) => req(`/pick?type=${type}&skip=${skip}`),
   queue: (type, genre, decade) => req(`/queue?type=${type}${genre ? `&genre=${encodeURIComponent(genre)}` : ''}${decade ? `&decade=${decade}` : ''}`),
   search: (q, type) => req(`/search?q=${encodeURIComponent(q)}${type ? `&type=${type}` : ''}`),

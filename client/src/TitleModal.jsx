@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api.js';
 import { useApp } from './App.jsx';
-import { Modal, Poster, RateButtons, ScoreRing, TitleCard, fmtRuntime, fmtVotes, yearSpan, scoreTone, useEnriched } from './components.jsx';
+import { Modal, Poster, RateButtons, ScoreRing, TitleCard, fmtRuntime, fmtVotes, yearSpan, scoreTone, useEnriched, CONTENT_CATS, LEVELS, Dots } from './components.jsx';
 
 const epColor = (r) => {
   // 5.0 → red, 7.5 → amber, 9.5 → green
@@ -85,6 +85,7 @@ export function TitleModal({ id, onClose }) {
         {item.awards && <p className="muted small"><b>Awards</b> {item.awards}</p>}
 
         <WhereToWatch item={item} pending={pending} />
+        <ContentGuide item={item} pending={!full} />
 
         {isTv && item.verdicts?.length > 0 && (
           <section className="tv-verdicts">
@@ -128,6 +129,49 @@ function WhereToWatch({ item, pending }) {
       {nothing && <p className="muted small">{w.complete ? 'Not on any streaming service in your region right now.' : 'No services listed.'}</p>}
       {!w.complete && <p className="muted small">This list comes from Rotten Tomatoes and only covers its partner services, so it can miss some. <button className="link" onClick={openSettings}>Connect TMDB</button> for complete, per-country availability.</p>}
       {w.link && <a className="link small" href={w.link} target="_blank" rel="noreferrer">All options ↗</a>}
+    </section>
+  );
+}
+
+function ContentGuide({ item, pending }) {
+  const { status } = useApp();
+  const on = status.sources.csm, va = item.va?.show ? item.va : null;
+  if (!on && !va) return null;
+  const c = item.content;
+  const flagged = Object.fromEntries((item.flags || []).map((f) => [f.key, f]));
+  const over = (item.flags || []).some((f) => f.over);
+  return (
+    <section className="content-guide">
+      <h3>Content {c?.age != null && <small className="muted">Common Sense Media says age {c.age}+</small>}</h3>
+      {on && c && (
+        <div className="content-grid">
+          {CONTENT_CATS.map((k) => {
+            const f = flagged[k.key];
+            return (
+              <div key={k.key} className={`content-cat ${f ? (f.over ? 'over' : 'flagged') : ''}`}>
+                <span className="cc-name">{k.label}</span>
+                <Dots level={c[k.key] ?? 0} />
+                <span className="cc-level">{LEVELS[c[k.key] ?? 0]}{f ? (f.over ? ' · over your limit' : ' · flagged') : ''}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {on && over && <p className="muted small">{item.rescued ? 'Over your limit, but kept because VidAngel can filter it.' : 'Over a limit you set, so this is left out of For you, tonight’s pick and Discover.'}</p>}
+      {on && c && <a className="link small" href={c.url} target="_blank" rel="noreferrer">What’s in it, in detail (Common Sense Media) ↗</a>}
+      {on && !c && <p className="muted small">{pending || !item.contentChecked ? 'Looking up content levels…' : 'Common Sense Media has no review for this title.'}</p>}
+      {va && (
+        <div className="va-box">
+          {va.available ? (
+            <>
+              <p><b>On VidAngel</b>{va.via.length ? ` — plays through ${va.via.join(', ')}` : ''}. <a href={va.url} target="_blank" rel="noreferrer">Open in VidAngel ↗</a></p>
+              {va.cats?.length > 0 && <div className="va-cats"><span className="muted small">Moments it can skip or mute:</span>{va.cats.map((x) => <span className="prov" key={x.name}>{x.name} <b>{x.count}</b></span>)}</div>}
+              {item.type === 'tv' && <p className="muted small">Shows are tagged episode by episode, so counts are on VidAngel.</p>}
+            </>
+          ) : <p className="muted">{pending && !item.vaChecked ? 'Checking VidAngel…' : 'Not available on VidAngel.'}</p>}
+        </div>
+      )}
+      {!va && status.settings.vidangel && <p className="muted small">{item.vaBlocked ? 'VidAngel is refusing lookups right now. Reel will try again in about an hour.' : pending ? 'Checking VidAngel…' : 'Couldn’t check VidAngel for this title.'}</p>}
     </section>
   );
 }

@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DATA = path.join(ROOT, 'data');
+// REEL_DATA points the server at another data folder (used to test against a copy of the real data).
+const DATA = process.env.REEL_DATA || path.join(ROOT, 'data');
 export const CATALOG_PATH = path.join(DATA, 'catalog.db');
 
 fs.mkdirSync(DATA, { recursive: true });
@@ -27,7 +28,10 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS recs (source_id TEXT, target_id TEXT, rank INTEGER, PRIMARY KEY (source_id, target_id));
 `);
-if (!db.prepare("SELECT 1 FROM pragma_table_info('ext') WHERE name='rt_watch'").get()) db.exec('ALTER TABLE ext ADD COLUMN rt_watch TEXT');
+// Columns added after the first release: where-to-watch, content ratings (Common Sense Media) and VidAngel availability.
+for (const [col, kind] of [['rt_watch', 'TEXT'], ['csm_checked', 'INTEGER'], ['csm', 'TEXT'], ['va_checked', 'INTEGER'], ['va', 'TEXT']]) {
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('ext') WHERE name=?").get(col)) db.exec(`ALTER TABLE ext ADD COLUMN ${col} ${kind}`);
+}
 if (hasCatalog()) db.exec(`ATTACH DATABASE '${CATALOG_PATH.replace(/'/g, "''")}' AS cat`);
 
 const DEFAULTS = {
