@@ -9,6 +9,7 @@ const ICONS = {
   meh: <><circle cx="12" cy="12" r="10" /><path d="M8 15h8M9 9h.01M15 9h.01" /></>,
   popcorn: <><path d="M6 10.5 7.5 21h9L18 10.5" /><path d="M10.3 10.8 11 21M13.7 10.8 13 21" strokeWidth="1.4" /><g fill="currentColor" stroke="none"><circle cx="8" cy="7.2" r="2.7" /><circle cx="12" cy="5.4" r="3.1" /><circle cx="16" cy="7.2" r="2.7" /><rect x="6" y="7.5" width="12" height="3" rx="1" /></g></>,
   tomato: <><circle cx="12" cy="13.8" r="7.4" fill="currentColor" stroke="none" /><path d="M12 6.6V3.4M12 6.6c-1-1.7-2.8-2.2-4.2-1.8M12 6.6c1-1.7 2.8-2.2 4.2-1.8" /></>,
+  eye: <><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>,
   star: <path fill="currentColor" stroke="none" d="m12 2.6 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.5l-5.9 3.1 1.2-6.5L2.5 9.5l6.6-.9z" />,
 };
 export function Icon({ name, size = 16 }) {
@@ -20,6 +21,8 @@ export const RATINGS = [
   { value: 1, label: 'Liked it', short: 'Liked', icon: 'up' },
   { value: -1, label: 'It was okay', short: 'Meh', icon: 'meh' },
   { value: -2, label: 'Didn’t like it', short: 'Nope', icon: 'down' },
+  // Seen, but no opinion: hides it like any rated title without teaching Reel anything about your taste.
+  { value: 9, label: 'Seen it — can’t rate it', short: 'Seen', icon: 'eye' },
 ];
 export const ratingInfo = (v) => RATINGS.find((r) => r.value === v);
 
@@ -34,7 +37,7 @@ export const yearSpan = (it) => {
 };
 
 /** "2006 · 2h 31m" for movies, "2008–2013 · 5 seasons" for shows. */
-export const yearAndLength = (it) => [yearSpan(it), it.type === 'movie' ? fmtRuntime(it.runtime) : it.tv ? `${it.tv.seasons} season${it.tv.seasons > 1 ? 's' : ''}` : null].filter(Boolean).join(' · ');
+export const yearAndLength = (it) => [yearSpan(it), it.type === 'movie' ? fmtRuntime(it.runtime) : it.tv ? `${it.tv.seasons} season${it.tv.seasons > 1 ? 's' : ''}` : null, it.rated].filter(Boolean).join(' · ');
 
 export function Poster({ item, className = '' }) {
   const [failed, setFailed] = useState(false);
@@ -135,7 +138,7 @@ export function useEnriched(items, active = true) {
   const any = status.sources.rt || status.sources.tmdb || status.sources.omdb || status.sources.csm || status.sources.va;
   useEffect(() => {
     if (!active || !any || !items?.length) return;
-    const need = items.filter((it) => !tried.current.has(it.id) && ((status.sources.rt && !it.rtChecked) || ((status.sources.tmdb || status.sources.omdb) && !it.poster) || (status.sources.csm && !it.contentChecked) || (status.sources.va && !it.vaChecked)));
+    const need = items.filter((it) => !tried.current.has(it.id) && ((status.sources.rt && !it.rtChecked) || ((status.sources.tmdb || status.sources.omdb) && !it.poster) || (status.sources.tmdb && !it.tmdbChecked) || (status.sources.csm && !it.contentChecked) || (status.sources.va && !it.vaChecked)));
     if (!need.length) return;
     need.forEach((it) => tried.current.add(it.id));
     let live = true;
@@ -265,7 +268,7 @@ export function ContentLine({ item }) {
     <div className="contentline">
       {flags.map((f) => <span key={f.key} className={`flag ${f.over ? 'over' : ''}`} title={`${f.label}: ${f.level} out of 5${f.over ? ' — over your limit' : ''}`}>{f.label} {f.level}</span>)}
       {unknown && <span className="flag none" title="Common Sense Media has no review for this title">No content rating</span>}
-      {va && <span className="flag va" title={`VidAngel can filter this${item.va.via.length ? ` (via ${item.va.via.join(', ')})` : ''}`}>VidAngel</span>}
+      {va && <span className="flag va" title={`VidAngel can filter this${item.va.via.length ? ` (on ${item.va.via.join(', ')})` : ''}`}>VidAngel</span>}
     </div>
   );
 }
@@ -320,7 +323,8 @@ export function ContentSettings() {
       </div>
       <div className={`source-card ${s.vidangel ? 'on' : ''}`}>
         <Toggle label="Show VidAngel availability" checked={s.vidangel} onChange={(v) => save({ vidangel: v })} hint="Marks titles VidAngel can filter" />
-        {s.vidangel && status.va?.blocked && <p className="note warn">VidAngel is refusing lookups right now, so badges are missing. Reel pauses for an hour, then tries again.</p>}
+        {s.vidangel && status.va?.blocked && <p className="note warn">Couldn’t download VidAngel’s title list, so some badges are missing. Reel tries again within the hour.</p>}
+        {s.vidangel && status.va?.titles > 0 && <p className="muted small">Checked against VidAngel’s published list of {status.va.titles.toLocaleString()} titles, refreshed daily.</p>}
         <p className="muted small">Checked against VidAngel’s public catalogue weekly. VidAngel plays titles through a service you already have (Netflix, Prime Video and so on), so each title page shows which one it needs and how many moments are tagged per category.</p>
       </div>
     </>

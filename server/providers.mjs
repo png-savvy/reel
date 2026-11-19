@@ -1,10 +1,12 @@
 // External data providers. Everything is cached in the `ext` table so each title is only
 // looked up once per TTL, and lookups are rate-limited to stay polite.
-import { db, getSetting } from './db.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { db, getSetting, DATA, hasCatalog } from './db.mjs';
 
 const UA = 'Reel/0.1 (personal movie-finder app)';
 const DAY = 86400e3;
-const TTL = { wd: 60 * DAY, rt: 14 * DAY, omdb: 30 * DAY, tmdb: 30 * DAY, csm: 90 * DAY, va: 7 * DAY };
+const TTL = { wd: 60 * DAY, rt: 14 * DAY, omdb: 30 * DAY, tmdb: 30 * DAY, csm: 90 * DAY, va: 3 * DAY };
 const now = () => Date.now();
 const fresh = (ts, ttl) => ts && now() - ts < ttl;
 
@@ -170,7 +172,7 @@ async function fetchTmdb(title, key) {
   const hit = (kind === 'movie' ? found.movie_results : found.tv_results)?.[0];
   const fields = { tmdb_checked: now() };
   if (hit) {
-    const d = await tmdbGet(`/${kind}/${hit.id}?append_to_response=recommendations,watch/providers,videos,credits`, key);
+    const d = await tmdbGet(`/${kind}/${hit.id}?append_to_response=recommendations,watch/providers,videos,credits,${kind === 'movie' ? 'release_dates' : 'content_ratings'}`, key);
     const region = getSetting('region') || 'US';
     const wp = d['watch/providers']?.results?.[region];
     const trailer = d.videos?.results?.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official) || d.videos?.results?.find((v) => v.site === 'YouTube' && v.type === 'Trailer');
@@ -186,6 +188,14 @@ async function fetchTmdb(title, key) {
       }) : null,
       cast: JSON.stringify((d.credits?.cast || []).slice(0, 8).map((c) => c.name)),
     });
+    // Age rating (G, PG-13, TV-MA…) for the chosen region, falling back to the US one.
+    const cert = (cc) => {
+      if (kind === 'tv') return d.content_ratings?.results?.find((x) => x.iso_3166_1 === cc)?.rating || null;
+      const rel = d.release_dates?.results?.find((x) => x.iso_3166_1 === cc)?.release_dates || [];
+      return (rel.find((x) => x.type === 3 && x.certification) || rel.find((x) => x.certification))?.certification || null;
+    };
+    const rated = cert(region) || cert('US');
+    if (rated) fields.rated = rated;
     if (d.poster_path) fields.poster = `https://image.tmdb.org/t/p/w500${d.poster_path}`;
     if (d.overview) fields.plot = d.overview;
     const ins = db.prepare('INSERT OR REPLACE INTO recs (source_id, target_id, rank) VALUES (?,?,?)');
@@ -242,20 +252,59 @@ async function fetchCsm(title) {
 // ---------- VidAngel: is the title in their filterable catalogue? ----------
 const VA = 'https://api.vidangel.com/api/';
 const plain = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '');
+// VidAngel's lookup API refuses automated requests, so availability comes from the public sitemap instead
+// (robots.txt points crawlers at it): one download a day lists every movie and show they can filter.
+const VA_SITEMAP = 'https://www.vidangel.com/sitemap.xml';
+const VA_FILE = path.join(DATA, 'vidangel-catalog.json');
+const vaSlug = (t) => String(t || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9\s_-]/g, '').trim().replace(/[\s_-]+/g, '-');
+let vaCat = null, vaLoading = null;
+try { vaCat = JSON.parse(fs.readFileSync(VA_FILE, 'utf8')); } catch { /* not downloaded yet */ }
+function parseVaSitemap(xml) {
+  const cat = { ts: now(), count: 0, movie: {}, show: {} };
+  for (const m of xml.matchAll(/<loc>https:\/\/www\.vidangel\.com\/(movie|show)\/([^/<]+)\//g)) {
+    const [, kind, slug] = m;
+    cat.count++;
+    // Slugs are the title plus a short id ("pulp-fiction-843ca"); a few have a number or nothing at all.
+    for (const base of new Set([slug.replace(/-[0-9a-f]{5}$/, ''), slug.replace(/-\d{3,4}$/, ''), slug])) {
+      const list = (cat[kind][base] ||= []);
+      if (!list.includes(slug)) list.push(slug);
+    }
+  }
+  return cat;
+}
+async function vaCatalog() {
+  if (vaCat && now() - vaCat.ts < DAY) return vaCat;
+  vaLoading ||= (async () => {
+    const res = await fetch(VA_SITEMAP, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(60000) });
+    if (!res.ok) { const e = new Error(`${res.status} vidangel sitemap`); e.status = res.status; throw e; }
+    const cat = parseVaSitemap(await res.text());
+    if (Object.keys(cat.movie).length < 500) throw new Error('vidangel sitemap looked incomplete');
+    vaCat = cat;
+    fs.writeFileSync(VA_FILE, JSON.stringify(cat));
+  })().finally(() => { vaLoading = null; });
+  try { await vaLoading; } catch (e) { if (!vaCat) throw e; vaCat.ts = now() - DAY + 60 * 60e3; console.warn('[vidangel] keeping the saved list:', e.message); }
+  return vaCat;
+}
+// The sitemap has titles but no years. When several films share a name, VidAngel's copies go to the best-known ones.
+const sameName = hasCatalog() ? db.prepare('SELECT id FROM cat.titles WHERE type=? AND title=? COLLATE NOCASE ORDER BY votes DESC LIMIT 12') : null;
 async function fetchVa(title) {
-  const d = await vaLimit(() => get(`${VA}content/search/?q=${encodeURIComponent(title.title)}`));
+  const cat = await vaCatalog();
   const kind = title.type === 'movie' ? 'movie' : 'show';
-  const hit = (d.titles || []).find((w) => w.type === kind && w.enabled !== false && plain(w.title) === plain(title.title) && (!w.year || !title.year || Math.abs(w.year - title.year) <= 1));
-  const va = hit
-    ? { available: true, slug: hit.slug, kind, via: [...new Set((hit.offering_groups || []).flatMap((g) => g.catalogs.map((c) => c.title)))] }
-    : { available: false };
+  const slugs = cat[kind][vaSlug(title.title)] || [];
+  let slug = null;
+  if (slugs.length) {
+    const rank = sameName ? sameName.all(title.type, title.title).findIndex((r) => r.id === title.id) : 0;
+    if (rank >= 0 && rank < slugs.length) slug = slugs.length === 1 ? slugs[0] : slugs[rank];
+  }
+  let old; try { old = JSON.parse(getExt.get(title.id)?.va || 'null'); } catch { old = null; }
+  const va = slug ? { available: true, slug, kind, cats: old?.slug === slug ? old.cats : undefined } : { available: false };
   update(title.id, { va_checked: now(), va: JSON.stringify(va) });
 }
 /** For the title page: how many moments VidAngel has tagged in each category. Movies only (shows are tagged per episode). */
 export async function vaDetail(title) {
   const ext = getExt.get(title.id) || {};
   let va; try { va = JSON.parse(ext.va || 'null'); } catch { va = null; }
-  if (!va?.available || va.kind !== 'movie' || va.cats || now() < vaBlockedUntil) return;
+  if (!va?.available || va.kind !== 'movie' || va.cats || now() < vaApiBlockedUntil) return;
   try {
     const m = (await vaLimit(() => get(`${VA}content/v2/movies/?slug=${encodeURIComponent(va.slug)}`))).results?.[0];
     if (!m) return;
@@ -267,7 +316,10 @@ export async function vaDetail(title) {
       va.cats = (p.categories || []).filter((c) => c.count > 0 && !/credits/i.test(c.display_title)).map((c) => ({ name: c.display_title, count: c.count }));
     }
     update(title.id, { va: JSON.stringify(va) });
-  } catch (e) { console.warn('[vidangel]', title.title, e.message); }
+  } catch (e) {
+    if (e.status === 403 || e.status === 429) vaApiBlockedUntil = now() + 6 * 60 * 60e3; // the detail API is refusing us; the badge itself doesn't need it
+    else console.warn('[vidangel]', title.title, e.message);
+  }
 }
 
 // ---------- Orchestration ----------
@@ -277,9 +329,10 @@ export function sourcesEnabled() {
 }
 let rtBlockedUntil = 0;
 let csmBlockedUntil = 0;
-// VidAngel refuses requests (403) when it sees too many; stop asking for an hour rather than keep knocking.
+// If the VidAngel list can't be downloaded, wait an hour before trying again.
 let vaBlockedUntil = 0;
-export const vaStatus = () => ({ blocked: now() < vaBlockedUntil });
+let vaApiBlockedUntil = 0;
+export const vaStatus = () => ({ blocked: now() < vaBlockedUntil, titles: vaCat?.count || 0, updated: vaCat?.ts || null });
 export const rtStatus = () => ({ blocked: now() < rtBlockedUntil });
 
 const inflight = new Map();
@@ -303,7 +356,7 @@ export async function enrich(titles, { only } = {}) {
       jobs.push(fetchCsm(t).catch((e) => { if (e.status === 403 || e.status === 429) csmBlockedUntil = now() + 10 * 60e3; }));
     }
     if (want('va') && !fresh(ext.va_checked, TTL.va) && now() >= vaBlockedUntil) {
-      jobs.push(fetchVa(t).catch((e) => { if (e.status === 403 || e.status === 429) { if (now() >= vaBlockedUntil) console.warn('[vidangel] refused, pausing for an hour'); vaBlockedUntil = now() + 60 * 60e3; } else console.warn('[vidangel]', t.title, e.message); }));
+      jobs.push(fetchVa(t).catch((e) => { if (now() >= vaBlockedUntil) console.warn('[vidangel] list unavailable, pausing for an hour:', e.message); vaBlockedUntil = now() + 60 * 60e3; }));
     }
     if (!jobs.length) return null;
     const p = Promise.all(jobs).finally(() => inflight.delete(t.id));

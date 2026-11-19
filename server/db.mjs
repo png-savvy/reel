@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // REEL_DATA points the server at another data folder (used to test against a copy of the real data).
-const DATA = process.env.REEL_DATA || path.join(ROOT, 'data');
+export const DATA = process.env.REEL_DATA || path.join(ROOT, 'data');
 export const CATALOG_PATH = path.join(DATA, 'catalog.db');
 
 fs.mkdirSync(DATA, { recursive: true });
@@ -31,6 +31,14 @@ db.exec(`
 // Columns added after the first release: where-to-watch, content ratings (Common Sense Media) and VidAngel availability.
 for (const [col, kind] of [['rt_watch', 'TEXT'], ['csm_checked', 'INTEGER'], ['csm', 'TEXT'], ['va_checked', 'INTEGER'], ['va', 'TEXT']]) {
   if (!db.prepare("SELECT 1 FROM pragma_table_info('ext') WHERE name=?").get(col)) db.exec(`ALTER TABLE ext ADD COLUMN ${col} ${kind}`);
+}
+// One-off: titles looked up on TMDB before age ratings were collected get looked up again.
+if (!db.prepare("SELECT 1 FROM settings WHERE key='ratedBackfill'").get()) {
+  db.exec("UPDATE ext SET tmdb_checked = NULL WHERE tmdb_checked IS NOT NULL AND rated IS NULL; INSERT INTO settings (key, value) VALUES ('ratedBackfill', '1')");
+}
+// One-off: VidAngel availability now comes from their sitemap; forget answers from the old lookup.
+if (!db.prepare("SELECT 1 FROM settings WHERE key='vaSitemap'").get()) {
+  db.exec("UPDATE ext SET va_checked = NULL; INSERT INTO settings (key, value) VALUES ('vaSitemap', '1')");
 }
 if (hasCatalog()) db.exec(`ATTACH DATABASE '${CATALOG_PATH.replace(/'/g, "''")}' AS cat`);
 

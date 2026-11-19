@@ -33,7 +33,7 @@ app.get('/api/status', wrap((req, res) => {
   if (out.catalog) {
     out.builtAt = db.prepare("SELECT value FROM meta WHERE key='built_at'").get()?.value;
     out.counts = Object.fromEntries(db.prepare('SELECT type, count(*) n FROM titles GROUP BY type').all().map((r) => [r.type, r.n]));
-    out.rated = Object.fromEntries(db.prepare('SELECT t.type, count(*) n FROM ratings r JOIN titles t ON t.id=r.title_id WHERE r.value != 0 GROUP BY t.type').all().map((r) => [r.type, r.n]));
+    out.rated = Object.fromEntries(db.prepare('SELECT t.type, count(*) n FROM ratings r JOIN titles t ON t.id=r.title_id WHERE r.value BETWEEN -2 AND 2 AND r.value != 0 GROUP BY t.type').all().map((r) => [r.type, r.n]));
     out.watchlist = db.prepare('SELECT count(*) n FROM watchlist').get().n;
   }
   res.json(out);
@@ -337,7 +337,7 @@ app.get('/api/title/:id', needCatalog, wrap(async (req, res) => {
   if (req.query.fast !== '1') { await enrich([row]); if (sourcesEnabled().va) await vaDetail(row); row = rowsByIds([id])[0]; }
   const d = decorate(row, getProfile(row.type));
   const ext = db.prepare('SELECT * FROM ext WHERE title_id=?').get(id) || {};
-  d.wiki = ext.wiki; d.rated = ext.rated || d.content?.mpaa || null; d.awards = ext.awards; d.backdrop = ext.backdrop; d.trailer = ext.trailer;
+  d.wiki = ext.wiki; d.rated = d.rated || ext.rated || null; d.awards = ext.awards; d.backdrop = ext.backdrop; d.trailer = ext.trailer;
   d.cast = ext.cast ? JSON.parse(ext.cast) : (ext.actors ? ext.actors.split(', ') : null);
   d.providers = ext.providers ? JSON.parse(ext.providers) : null;
   d.imdbUrl = `https://www.imdb.com/title/${id}/`;
@@ -375,7 +375,7 @@ app.post('/api/rate', wrap((req, res) => {
   if (value > 0 && sourcesEnabled().tmdb) enrich(rowsByIds([id]), { only: ['tmdb'] }).then(invalidateProfile).catch(() => {});
   res.json({ ok: true });
 }));
-const clampRating = (v) => ([2, 1, 0, -1, -2].includes(+v) ? +v : 0);
+const clampRating = (v) => ([2, 1, 0, -1, -2, 9].includes(+v) ? +v : 0);
 app.post('/api/watchlist', wrap((req, res) => {
   if (req.body.on) db.prepare('INSERT OR IGNORE INTO watchlist (title_id,ts) VALUES (?,?)').run(req.body.id, Date.now());
   else db.prepare('DELETE FROM watchlist WHERE title_id=?').run(req.body.id);

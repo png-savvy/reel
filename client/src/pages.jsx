@@ -100,7 +100,7 @@ function Pick() {
         <div className="eyebrow">{type === 'tv' ? 'Start this next' : 'Tonight’s pick'}{item.match != null ? ` · ${item.match}% match` : ''}</div>
         <h1><button onClick={() => openTitle(item.id)}>{item.title}</button></h1>
         <div className="pick-meta">
-          {[yearSpan(item), item.type === 'movie' ? fmtRuntime(item.runtime) : item.tv ? `${item.tv.seasons} season${item.tv.seasons > 1 ? 's' : ''}` : null, item.genres.slice(0, 3).join(', '), item.directors ? (item.type === 'movie' ? `Dir. ${item.directors.split(', ')[0]}` : null) : null].filter(Boolean).join('  ·  ')}
+          {[yearSpan(item), item.type === 'movie' ? fmtRuntime(item.runtime) : item.tv ? `${item.tv.seasons} season${item.tv.seasons > 1 ? 's' : ''}` : null, item.rated, item.genres.slice(0, 3).join(', '), item.directors ? (item.type === 'movie' ? `Dir. ${item.directors.split(', ')[0]}` : null) : null].filter(Boolean).join('  ·  ')}
         </div>
         <div className="pick-scores">
           <ScoreRing value={main} size={54} label={item.type === 'tv' ? 'Worth-It score' : 'Reel score'} />

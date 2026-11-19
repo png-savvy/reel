@@ -3,11 +3,12 @@ import { db, getSetting } from './db.mjs';
 import { tvVerdicts } from './tvstats.mjs';
 
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+// A rating of 9 means "seen it, no opinion": it counts as seen everywhere but never feeds the taste profile.
 export const RATING_LABEL = { 2: 'loved', 1: 'liked', '-1': 'meh', '-2': 'disliked' };
 
 const BASE_COLS = `t.id, t.type, t.title, t.year, t.end_year, t.runtime, t.genres, t.rating, t.votes, t.bayes, t.directors, t.kind,
   e.rt_aud, e.rt_crit, e.omdb_rt_crit, e.rt_slug, e.rt_checked, e.rt_aud_count, e.metacritic, e.tmdb_score, e.poster, e.plot,
-  e.omdb_checked, e.tmdb_checked, e.providers, e.rt_watch, e.csm_checked, e.csm, e.va_checked, e.va,
+  e.omdb_checked, e.tmdb_checked, e.providers, e.rt_watch, e.csm_checked, e.csm, e.va_checked, e.va, e.rated,
   r.value AS my_rating, (w.title_id IS NOT NULL) AS watchlisted,
   s.seasons, s.eps, s.ep_avg, s.consistency, s.landing, s.retention, s.hype_gap, s.peak_season, s.good_through, s.worth, s.ended`;
 const BASE_FROM = `FROM titles t
@@ -24,7 +25,7 @@ export const invalidateProfile = () => { profileCache = null; };
 export function getProfile(type) {
   if (!profileCache) profileCache = {};
   if (profileCache[type]) return profileCache[type];
-  const rows = db.prepare(`SELECT t.id, t.title, t.genres, t.year, r.value FROM ratings r JOIN titles t ON t.id = r.title_id WHERE r.value != 0 AND t.type = ?`).all(type);
+  const rows = db.prepare(`SELECT t.id, t.title, t.genres, t.year, r.value FROM ratings r JOIN titles t ON t.id = r.title_id WHERE r.value BETWEEN -2 AND 2 AND r.value != 0 AND t.type = ?`).all(type);
   const genres = {}, decades = {}, people = {};
   const add = (m, k, v) => { (m[k] ||= { sum: 0, n: 0 }); m[k].sum += v; m[k].n++; };
   for (const r of rows) {
@@ -32,7 +33,7 @@ export function getProfile(type) {
     if (r.year) add(decades, Math.floor(r.year / 10) * 10, r.value);
   }
   const ppl = db.prepare(`SELECT tp.person_id, p.name, r.value, t.title FROM ratings r JOIN titles t ON t.id=r.title_id
-    JOIN title_people tp ON tp.title_id=r.title_id JOIN people p ON p.id=tp.person_id WHERE r.value != 0 AND t.type=?`).all(type);
+    JOIN title_people tp ON tp.title_id=r.title_id JOIN people p ON p.id=tp.person_id WHERE r.value BETWEEN -2 AND 2 AND r.value != 0 AND t.type=?`).all(type);
   for (const p of ppl) {
     (people[p.person_id] ||= { sum: 0, n: 0, name: p.name, loved: [] });
     people[p.person_id].sum += p.value; people[p.person_id].n++;
@@ -44,7 +45,7 @@ export function getProfile(type) {
   // TMDB "people who liked X also liked" links from titles the user enjoyed.
   const recs = new Map();
   for (const r of db.prepare(`SELECT rc.target_id, rc.rank, t.title, r.value FROM recs rc JOIN ratings r ON r.title_id = rc.source_id
-      JOIN titles t ON t.id = rc.source_id WHERE r.value > 0 AND t.type = ?`).all(type)) {
+      JOIN titles t ON t.id = rc.source_id WHERE r.value BETWEEN 1 AND 2 AND t.type = ?`).all(type)) {
     const cur = recs.get(r.target_id) || { boost: 0, sources: [] };
     cur.boost += r.value * (1 - r.rank / 30);
     cur.sources.push({ title: r.title, value: r.value });
@@ -159,13 +160,21 @@ export function contentRules() {
   return out;
 }
 const json = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+// VidAngel filters a title while it plays on one of these services, so these are the ones that matter for it.
+const VA_SERVICES = [[/netflix/i, 'Netflix'], [/amazon prime video|^prime video/i, 'Prime Video'], [/^apple tv ?(\+|plus)?$/i, 'Apple TV+'], [/paramount/i, 'Paramount+']];
+function vaVia(providers) {
+  const names = (json(providers)?.stream || []).map((p) => p.name);
+  return VA_SERVICES.filter(([re]) => names.some((n) => re.test(n))).map(([, label]) => label);
+}
 /** Adds content levels, flags, the hide verdict and VidAngel availability to a decorated title. */
 function addContent(out, t, rules, showVa) {
   const csm = json(t.csm), va = json(t.va);
   out.contentChecked = !!t.csm_checked;
   out.content = csm?.levels ? { ...csm.levels, age: csm.age ?? null, mpaa: csm.mpaa ?? null, url: `https://www.commonsensemedia.org/${csm.slug}` } : null;
+  out.rated = t.rated || csm?.mpaa || null;
+  out.tmdbChecked = !!t.tmdb_checked;
   out.vaChecked = !!t.va_checked;
-  out.va = (showVa || rules?.vaRescue) && va ? { available: !!va.available, via: va.via || [], url: va.available ? `https://www.vidangel.com/${va.kind}/${va.slug}` : null, cats: va.cats || null, show: !!showVa } : null;
+  out.va = (showVa || rules?.vaRescue) && va ? { available: !!va.available, via: vaVia(t.providers), viaKnown: !!t.tmdb_checked, url: va.available ? `https://www.vidangel.com/${va.kind}/${va.slug}` : null, cats: va.cats || null, show: !!showVa } : null;
   out.flags = [];
   out.contentPass = true;
   if (!rules) return;

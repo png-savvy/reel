@@ -51,7 +51,7 @@ export default function App() {
       const prev = item.myRating ?? null;
       patch(item.id, { myRating: value, ...(value ? { watchlisted: false } : {}) });
       await api.rate(item.id, value);
-      if (!silent && value) notify(`Rated “${item.title}” · ${RATINGS.find((r) => r.value === value)?.short}`, () => actions.rate({ ...item, myRating: value }, prev, { silent: true }));
+      if (!silent && value) notify(value === 9 ? `Marked “${item.title}” as seen` : `Rated “${item.title}” · ${RATINGS.find((r) => r.value === value)?.short}`, () => actions.rate({ ...item, myRating: value }, prev, { silent: true }));
       setVersion((v) => v + 1);
       refreshStatus();
     },
@@ -165,7 +165,7 @@ function Search() {
           {items.map((it, i) => (
             <button key={it.id} className={i === hi ? 'hi' : ''} onMouseEnter={() => setHi(i)} onClick={() => choose(it)}>
               <Poster item={it} className="tiny" />
-              <span className="sr-main"><b>{it.title}</b><span className="muted">{it.year || '—'} · {it.type === 'tv' ? 'TV' : fmtRuntime(it.runtime) || 'Movie'}{it.directors ? ` · ${it.directors.split(', ')[0]}` : ''}</span></span>
+              <span className="sr-main"><b>{it.title}</b><span className="muted">{it.year || '—'} · {it.type === 'tv' ? 'TV' : fmtRuntime(it.runtime) || 'Movie'}{it.rated ? ` · ${it.rated}` : ''}{it.directors ? ` · ${it.directors.split(', ')[0]}` : ''}</span></span>
               <span className="sr-score">{it.imdb?.toFixed(1)}</span>
             </button>
           ))}

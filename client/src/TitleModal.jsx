@@ -165,13 +165,14 @@ function ContentGuide({ item, pending }) {
           {va.available ? (
             <>
               <p><b>On VidAngel</b>{va.via.length ? ` — plays through ${va.via.join(', ')}` : ''}. <a href={va.url} target="_blank" rel="noreferrer">Open in VidAngel ↗</a></p>
+              {!va.via.length && va.viaKnown && <p className="muted small">VidAngel has filters for it, but it isn’t included with Netflix, Prime Video, Apple TV+ or Paramount+ right now. Check VidAngel for how to watch it.</p>}
               {va.cats?.length > 0 && <div className="va-cats"><span className="muted small">Moments it can skip or mute:</span>{va.cats.map((x) => <span className="prov" key={x.name}>{x.name} <b>{x.count}</b></span>)}</div>}
               {item.type === 'tv' && <p className="muted small">Shows are tagged episode by episode, so counts are on VidAngel.</p>}
             </>
-          ) : <p className="muted">{pending && !item.vaChecked ? 'Checking VidAngel…' : 'Not available on VidAngel.'}</p>}
+          ) : <p className="muted">{pending && !item.vaChecked ? 'Checking VidAngel…' : 'Not in VidAngel’s catalogue.'}</p>}
         </div>
       )}
-      {!va && status.settings.vidangel && <p className="muted small">{item.vaBlocked ? 'VidAngel is refusing lookups right now. Reel will try again in about an hour.' : pending ? 'Checking VidAngel…' : 'Couldn’t check VidAngel for this title.'}</p>}
+      {!va && status.settings.vidangel && <p className="muted small">{item.vaBlocked ? 'Couldn’t download VidAngel’s title list. Reel will try again within the hour.' : pending ? 'Checking VidAngel…' : 'Couldn’t check VidAngel for this title.'}</p>}
     </section>
   );
 }
